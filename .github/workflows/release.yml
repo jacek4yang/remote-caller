@@ -1,0 +1,79 @@
+name: Release Linux x86_64 binary
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux-binary:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve release tag
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+            TAG="v$VERSION"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.version.outputs.skip != 'true'
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        if: steps.version.outputs.skip != 'true'
+      - name: Test
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --all-features
+          node --check web/app.js
+          node --check web/sw.js
+      - name: Build portable x86_64-v2 binary
+        if: steps.version.outputs.skip != 'true'
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64-v2
+        run: cargo build --locked --release --target x86_64-unknown-linux-gnu
+      - name: Package release
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          mkdir -p dist/bin dist/web dist/deploy/nginx dist/deploy/systemd dist/docs dist/scripts
+          cp target/x86_64-unknown-linux-gnu/release/remote-caller dist/bin/
+          cp -R web/. dist/web/
+          cp deploy/nginx/remote-caller.conf dist/deploy/nginx/
+          cp deploy/nginx/bootstrap.conf dist/deploy/nginx/
+          cp deploy/systemd/remote-caller.service deploy/systemd/remote-caller.env.example dist/deploy/systemd/
+          cp docs/*.md dist/docs/
+          cp scripts/test-production-wsl.sh dist/scripts/
+          cp README.md LICENSE dist/
+          tar -C dist -czf remote-caller-linux-x86_64.tar.gz .
+          sha256sum remote-caller-linux-x86_64.tar.gz > remote-caller-linux-x86_64.tar.gz.sha256
+      - name: Publish GitHub Release
+        if: steps.version.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          make_latest: true
+          files: |
+            remote-caller-linux-x86_64.tar.gz
+            remote-caller-linux-x86_64.tar.gz.sha256
