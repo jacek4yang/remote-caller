@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   bootstrap:
-    if: ${{ hashFiles('.bootstrap/part-11') != '' }}
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -22,6 +21,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -f .bootstrap/part-11
           cat .bootstrap/part-* | base64 -d > /tmp/remote-caller-src.tar.gz
           echo "f814c4554e51d5135e12658388b494043294ed4811ac012c4f66a4df851ca239  /tmp/remote-caller-src.tar.gz" | sha256sum -c -
           tar -xzf /tmp/remote-caller-src.tar.gz -C .
