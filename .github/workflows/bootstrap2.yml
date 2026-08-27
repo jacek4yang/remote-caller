@@ -21,7 +21,8 @@ jobs:
           cat .bootstrap/part-* | base64 -d > /tmp/remote-caller-src.tar.gz
           echo "f814c4554e51d5135e12658388b494043294ed4811ac012c4f66a4df851ca239  /tmp/remote-caller-src.tar.gz" | sha256sum -c -
           tar -xzf /tmp/remote-caller-src.tar.gz -C .
-          rm -rf .bootstrap .github/workflows/bootstrap.yml .github/workflows/bootstrap2.yml
+          rm -rf .bootstrap
+          rm -f .github/workflows/ci.yml .github/workflows/release.yml
 
       - name: Commit source
         run: |
