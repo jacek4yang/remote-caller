@@ -1,0 +1,36 @@
+[package]
+name = "remote-caller"
+version = "1.0.0"
+edition = "2024"
+description = "High-performance WebRTC signaling service for mobile and web"
+license = "MIT"
+
+[dependencies]
+argon2 = "0.5"
+axum = { version = "0.8", features = ["ws", "macros"] }
+base64 = "0.22"
+dashmap = "6"
+hmac = "0.12"
+jsonwebtoken = "9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["compression-gzip", "fs", "request-id", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+turn-server = { version = "4.1.4", default-features = false, features = ["udp", "tcp", "ssl"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"

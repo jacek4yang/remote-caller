@@ -1,1 +1,17 @@
 /target/
+/target-wsl/
+/dist/
+/remote-caller-linux-release.tar.gz
+/remote-caller-linux-release.tar.gz.sha256
+/.env
+/.env.*
+!/.env.example
+/.idea/
+/.vscode/
+*.log
+*.pem
+*.key
+*.p12
+*.pfx
+.DS_Store
+Thumbs.db

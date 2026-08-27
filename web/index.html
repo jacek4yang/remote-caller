@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07111f">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="安全、清晰、跨平台的点对点音视频通话">
+  <title>Remote Caller</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <section id="lobby" class="lobby" aria-labelledby="lobby-title">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">R</span> Remote Caller</div>
+      <div class="hero-copy">
+        <p class="eyebrow">端到端媒体传输</p>
+        <h1 id="lobby-title">相隔很远，也像在同一间房。</h1>
+        <p class="intro">无需安装，打开链接即可进行清晰稳定的语音或视频通话。</p>
+      </div>
+      <form id="join-form" class="join-card">
+        <label for="username">账号</label>
+        <input id="username" name="username" maxlength="40" autocomplete="username" placeholder="你的专属账号" required>
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" maxlength="256" autocomplete="current-password" placeholder="输入密码" required>
+        <label for="room-id">房间号</label>
+        <div class="room-field">
+          <input id="room-id" name="room" minlength="6" maxlength="64" spellcheck="false" required>
+          <button id="new-room" class="text-button" type="button">换一个</button>
+        </div>
+        <fieldset>
+          <legend>加入方式</legend>
+          <div class="mode-picker">
+            <label><input type="radio" name="mode" value="video" checked><span>视频通话</span></label>
+            <label><input type="radio" name="mode" value="audio"><span>仅语音</span></label>
+          </div>
+        </fieldset>
+        <button id="join-button" class="primary-button" type="submit">进入房间</button>
+        <p id="lobby-error" class="form-error" role="alert"></p>
+        <p class="secure-note"><span aria-hidden="true">●</span> 私密空间 · 仅限已配置的账号登录</p>
+      </form>
+    </section>
+
+    <section id="call" class="call" aria-label="通话界面" hidden>
+      <header class="call-header">
+        <div>
+          <div class="brand compact"><span class="brand-mark" aria-hidden="true">R</span> Remote Caller</div>
+          <p id="room-label" class="room-label"></p>
+        </div>
+        <div class="header-actions">
+          <span id="network-badge" class="status-badge waiting">正在连接</span>
+          <button id="share-button" class="share-button" type="button">分享链接</button>
+        </div>
+      </header>
+
+      <div class="stage">
+        <div class="remote-panel">
+          <video id="remote-video" autoplay playsinline></video>
+          <div id="remote-placeholder" class="placeholder">
+            <div class="pulse-avatar">…</div>
+            <h2 id="remote-title">等待对方加入</h2>
+            <p id="remote-subtitle">把房间链接发给想通话的人</p>
+          </div>
+          <div id="peer-name" class="name-tag" hidden></div>
+        </div>
+        <div id="local-panel" class="local-panel">
+          <video id="local-video" autoplay muted playsinline></video>
+          <div id="local-avatar" class="local-avatar" hidden>我</div>
+          <span class="local-label">你</span>
+        </div>
+      </div>
+
+      <div class="controls" role="toolbar" aria-label="通话控制">
+        <button id="mic-button" class="control-button" type="button" aria-pressed="false">
+          <span class="control-icon" aria-hidden="true">♩</span><span>静音</span>
+        </button>
+        <button id="camera-button" class="control-button" type="button" aria-pressed="false">
+          <span class="control-icon" aria-hidden="true">▣</span><span>摄像头</span>
+        </button>
+        <button id="switch-camera-button" class="control-button mobile-only" type="button">
+          <span class="control-icon" aria-hidden="true">↻</span><span>翻转</span>
+        </button>
+        <button id="pip-button" class="control-button" type="button" hidden>
+          <span class="control-icon" aria-hidden="true">▱</span><span>画中画</span>
+        </button>
+        <button id="hangup-button" class="control-button danger" type="button">
+          <span class="control-icon" aria-hidden="true">×</span><span>挂断</span>
+        </button>
+      </div>
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    </section>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>
