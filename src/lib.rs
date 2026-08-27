@@ -95,14 +95,10 @@ async fn login(
 ) -> Result<Json<SessionResponse>, ApiError> {
     // Bound expensive Argon2 work globally. A botnet cannot create an
     // unbounded spawn_blocking backlog even if Nginx per-IP limits are bypassed.
-    let permit = state
-        .login_slots
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| {
-            state.metrics.rejected_logins.fetch_add(1, Ordering::Relaxed);
-            ApiError::RateLimited
-        })?;
+    let permit = state.login_slots.clone().try_acquire_owned().map_err(|_| {
+        state.metrics.rejected_logins.fetch_add(1, Ordering::Relaxed);
+        ApiError::RateLimited
+    })?;
     let config = state.config.clone();
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
@@ -141,9 +137,7 @@ async fn ws_ticket(
 ) -> Result<Json<WsTicketResponse>, ApiError> {
     validate_room(&request.room)?;
     let claims = auth::verify_token(&state.config, bearer_token(&headers)?)?;
-    let (ticket, expires_at) = state
-        .issue_ws_ticket(claims, request.room)
-        .ok_or(ApiError::Capacity)?;
+    let (ticket, expires_at) = state.issue_ws_ticket(claims, request.room).ok_or(ApiError::Capacity)?;
     Ok(Json(WsTicketResponse { ticket, expires_at }))
 }
 
