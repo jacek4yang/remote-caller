@@ -34,12 +34,7 @@ pub struct ServerEvent {
     pub payload: Option<Value>,
 }
 
-pub async fn handle_socket(
-    mut socket: WebSocket,
-    claims: Claims,
-    state: AppState,
-    room_lease: RoomLease,
-) {
+pub async fn handle_socket(mut socket: WebSocket, claims: Claims, state: AppState, room_lease: RoomLease) {
     state.metrics.active_connections.fetch_add(1, Ordering::Relaxed);
     state.metrics.total_connections.fetch_add(1, Ordering::Relaxed);
     let room = room_lease.room().clone();
