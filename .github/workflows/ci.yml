@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --all-features
+      - run: cargo build --locked --release
+      - name: Validate browser JavaScript syntax
+        run: |
+          node --check web/app.js
+          node --check web/sw.js
+      - name: Ensure production secrets are not tracked
+        run: |
+          ! git grep -nE 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|JWT_SECRET=[A-Za-z0-9+/=_-]{32,}|TURN_SECRET=[A-Za-z0-9+/=_-]{32,}' -- ':!deploy/systemd/remote-caller.env.example' ':!scripts/test-production-wsl.sh'
