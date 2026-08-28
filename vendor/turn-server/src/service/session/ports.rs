@@ -77,9 +77,7 @@ impl FromStr for PortRange {
     type Err = PortRangeParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (start, end) = s
-            .split_once("..")
-            .ok_or(PortRangeParseError(s.to_string()))?;
+        let (start, end) = s.split_once("..").ok_or(PortRangeParseError(s.to_string()))?;
 
         Ok(Self {
             start: start.parse()?,

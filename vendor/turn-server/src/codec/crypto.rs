@@ -111,12 +111,7 @@ pub fn fingerprint(bytes: &[u8]) -> u32 {
 ///     }
 /// }
 /// ```
-pub fn generate_password(
-    username: &str,
-    password: &str,
-    realm: &str,
-    algorithm: PasswordAlgorithm,
-) -> Password {
+pub fn generate_password(username: &str, password: &str, realm: &str, algorithm: PasswordAlgorithm) -> Password {
     match algorithm {
         PasswordAlgorithm::Md5 => {
             let mut hasher = Md5::new();
@@ -144,14 +139,8 @@ pub fn generate_password(
 // itself.
 //
 // https://datatracker.ietf.org/doc/html/draft-uberti-behave-turn-rest-00#section-2.2
-pub fn static_auth_secret(
-    username: &str,
-    secret: &str,
-    realm: &str,
-    algorithm: PasswordAlgorithm,
-) -> Password {
-    let password =
-        BASE64_STANDARD.encode(hmac_sha1(secret.as_bytes(), &[username.as_bytes()]).as_slice());
+pub fn static_auth_secret(username: &str, secret: &str, realm: &str, algorithm: PasswordAlgorithm) -> Password {
+    let password = BASE64_STANDARD.encode(hmac_sha1(secret.as_bytes(), &[username.as_bytes()]).as_slice());
 
     generate_password(username, &password, realm, algorithm)
 }

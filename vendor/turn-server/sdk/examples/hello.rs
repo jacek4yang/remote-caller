@@ -29,18 +29,12 @@ impl TurnHooksServer for MyHooksServer {
     }
 
     async fn on_allocated(&self, id: Identifier, username: String, port: u16) {
-        println!(
-            "Session allocated: id={:?}, username={}, port={}",
-            id, username, port
-        );
+        println!("Session allocated: id={:?}, username={}, port={}", id, username, port);
         // Handle allocation event (e.g., log to database, update metrics)
     }
 
     async fn on_channel_bind(&self, id: Identifier, username: String, channel: u16) {
-        println!(
-            "Channel bound: id={:?}, username={}, channel={}",
-            id, username, channel
-        );
+        println!("Channel bound: id={:?}, username={}, channel={}", id, username, channel);
     }
 
     async fn on_create_permission(&self, id: Identifier, username: String, ports: Vec<u16>) {
@@ -69,9 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server = Server::builder();
     let hooks = MyHooksServer;
 
-    hooks
-        .start_with_server(&mut server, "127.0.0.1:3000".parse()?)
-        .await?;
+    hooks.start_with_server(&mut server, "127.0.0.1:3000".parse()?).await?;
 
     Ok(())
 }

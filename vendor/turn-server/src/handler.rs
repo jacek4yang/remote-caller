@@ -18,8 +18,7 @@ use anyhow::Result;
 
 #[cfg(feature = "api")]
 use sdk::protos::{
-    TurnAllocatedEvent, TurnChannelBindEvent, TurnCreatePermissionEvent, TurnDestroyEvent,
-    TurnRefreshEvent,
+    TurnAllocatedEvent, TurnChannelBindEvent, TurnCreatePermissionEvent, TurnDestroyEvent, TurnRefreshEvent,
 };
 
 #[cfg(feature = "api")]
@@ -63,12 +62,7 @@ impl Handler {
 }
 
 impl ServiceHandler for Handler {
-    async fn get_password(
-        &self,
-        id: &Identifier,
-        username: &str,
-        algorithm: PasswordAlgorithm,
-    ) -> Option<Password> {
+    async fn get_password(&self, id: &Identifier, username: &str, algorithm: PasswordAlgorithm) -> Option<Password> {
         log::info!(
             "get password: address={:?}, interface={:?}, transport={:?}, username={:?}, algorithm={:?}",
             id.source,
@@ -139,12 +133,11 @@ impl ServiceHandler for Handler {
         {
             self.statistics.register(*id);
 
-            self.rpc
-                .send_event(HooksEvent::Allocated(TurnAllocatedEvent {
-                    id: Some(id.into()),
-                    username: username.to_string(),
-                    port: port as i32,
-                }));
+            self.rpc.send_event(HooksEvent::Allocated(TurnAllocatedEvent {
+                id: Some(id.into()),
+                username: username.to_string(),
+                port: port as i32,
+            }));
         }
     }
 
@@ -190,12 +183,11 @@ impl ServiceHandler for Handler {
 
         #[cfg(feature = "api")]
         {
-            self.rpc
-                .send_event(HooksEvent::ChannelBind(TurnChannelBindEvent {
-                    id: Some(id.into()),
-                    username: username.to_string(),
-                    channel: channel as i32,
-                }));
+            self.rpc.send_event(HooksEvent::ChannelBind(TurnChannelBindEvent {
+                id: Some(id.into()),
+                username: username.to_string(),
+                channel: channel as i32,
+            }));
         }
     }
 

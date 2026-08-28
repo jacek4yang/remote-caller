@@ -65,8 +65,7 @@ impl ProviderServer for UdpServer {
             let socket = socket.clone();
 
             tokio::spawn(async move {
-                let mut sockets =
-                    HashMap::<SocketAddr, Sender<Buffer>>::with_capacity(max_connections);
+                let mut sockets = HashMap::<SocketAddr, Sender<Buffer>>::with_capacity(max_connections);
 
                 loop {
                     let mut buffer = Buffer::new();
@@ -143,11 +142,7 @@ impl ProviderServer for UdpServer {
     }
 
     async fn accept(&mut self) -> Result<Poll<(UdpSession, SocketAddr)>> {
-        let socket = self
-            .receiver
-            .recv()
-            .await
-            .ok_or_else(|| anyhow!("channel closed"))?;
+        let socket = self.receiver.recv().await.ok_or_else(|| anyhow!("channel closed"))?;
 
         let addr = socket.addr;
 

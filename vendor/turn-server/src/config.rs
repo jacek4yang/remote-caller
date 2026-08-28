@@ -130,16 +130,12 @@ impl Server {
         self.interfaces
             .iter()
             .map(|item| match item {
-                Interface::Tcp {
-                    listen, external, ..
-                } => InterfaceAddr {
+                Interface::Tcp { listen, external, .. } => InterfaceAddr {
                     addr: *listen,
                     external: *external,
                     transport: Transport::Tcp,
                 },
-                Interface::Udp {
-                    listen, external, ..
-                } => InterfaceAddr {
+                Interface::Udp { listen, external, .. } => InterfaceAddr {
                     addr: *listen,
                     external: *external,
                     transport: Transport::Udp,
@@ -220,9 +216,7 @@ pub struct Api {
 
 impl Api {
     fn bind() -> SocketAddr {
-        "127.0.0.1:3000"
-            .parse()
-            .expect("Invalid default API bind address")
+        "127.0.0.1:3000".parse().expect("Invalid default API bind address")
     }
 
     fn timeout() -> u32 {
@@ -419,8 +413,6 @@ impl Config {
     /// default configuration is used.
     ///
     pub fn load() -> Result<Self> {
-        Ok(toml::from_str::<Self>(&read_to_string(
-            &Cli::parse().config,
-        )?)?)
+        Ok(toml::from_str::<Self>(&read_to_string(&Cli::parse().config)?)?)
     }
 }

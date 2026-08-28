@@ -74,11 +74,7 @@ impl MemoryPool {
                             // idle buffers is more than 3, we will drop 2/3 of
                             // the idle buffers; otherwise, we will drop all
                             // idle buffers.
-                            for _ in 0..if buffer_size <= 3 {
-                                buffer_size
-                            } else {
-                                buffer_size / 3
-                            } {
+                            for _ in 0..if buffer_size <= 3 { buffer_size } else { buffer_size / 3 } {
                                 let _ = queue.pop();
                             }
                         }
@@ -99,15 +95,9 @@ impl MemoryPool {
         // If the capacity is greater than the maximum allowed size, use the
         // maximum allowed size.
         // Otherwise, use the provided capacity.
-        let capacity = capacity
-            .unwrap_or(Self::MAX_MESSAGE_SIZE)
-            .min(Self::MAX_MESSAGE_SIZE);
+        let capacity = capacity.unwrap_or(Self::MAX_MESSAGE_SIZE).min(Self::MAX_MESSAGE_SIZE);
 
-        Buffer(Some(
-            self.0
-                .pop()
-                .unwrap_or_else(|| BytesMut::with_capacity(capacity)),
-        ))
+        Buffer(Some(self.0.pop().unwrap_or_else(|| BytesMut::with_capacity(capacity))))
     }
 
     // Return a buffer to the pool.
@@ -148,17 +138,13 @@ impl Deref for Buffer {
     type Target = BytesMut;
 
     fn deref(&self) -> &Self::Target {
-        self.0
-            .as_ref()
-            .expect("buffer is already returned to the pool")
+        self.0.as_ref().expect("buffer is already returned to the pool")
     }
 }
 
 impl DerefMut for Buffer {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0
-            .as_mut()
-            .expect("buffer is already returned to the pool")
+        self.0.as_mut().expect("buffer is already returned to the pool")
     }
 }
 

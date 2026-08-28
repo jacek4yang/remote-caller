@@ -5,17 +5,16 @@ use fern::{DateBased, Dispatch};
 use turn_server::config::Config;
 
 pub fn init(config: &Config) -> Result<()> {
-    let mut logger =
-        Dispatch::new()
-            .level(config.log.level.into())
-            .format(move |out, message, record| {
-                out.finish(format_args!(
-                    "[{}] - ({}) - {}",
-                    record.level(),
-                    record.file_static().unwrap_or("*"),
-                    message
-                ))
-            });
+    let mut logger = Dispatch::new()
+        .level(config.log.level.into())
+        .format(move |out, message, record| {
+            out.finish(format_args!(
+                "[{}] - ({}) - {}",
+                record.level(),
+                record.file_static().unwrap_or("*"),
+                message
+            ))
+        });
 
     if config.log.stdout {
         logger = logger.chain(std::io::stdout());

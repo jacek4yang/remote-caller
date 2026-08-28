@@ -138,25 +138,12 @@ impl XAddress {
     /// XAddress::serialize(&source, &transaction_id, &mut buffer, false);
     /// assert_eq!(&addr_bytes, &buffer[..]);
     /// ```
-    pub fn serialize<B: BufMut>(
-        addr: &SocketAddr,
-        transaction_id: &[u8],
-        bytes: &mut B,
-        is_xor: bool,
-    ) {
+    pub fn serialize<B: BufMut>(addr: &SocketAddr, transaction_id: &[u8], bytes: &mut B, is_xor: bool) {
         bytes.put_u8(0);
 
-        let xor_addr = if is_xor {
-            xor(addr, transaction_id)
-        } else {
-            *addr
-        };
+        let xor_addr = if is_xor { xor(addr, transaction_id) } else { *addr };
 
-        bytes.put_u8(if xor_addr.is_ipv4() {
-            IpFamily::V4
-        } else {
-            IpFamily::V6
-        } as u8);
+        bytes.put_u8(if xor_addr.is_ipv4() { IpFamily::V4 } else { IpFamily::V6 } as u8);
 
         bytes.put_u16(xor_addr.port());
 
@@ -193,11 +180,7 @@ impl XAddress {
     /// let addr = XAddress::deserialize(&addr_bytes, &transaction_id, false).unwrap();
     /// assert_eq!(addr, source);
     /// ```
-    pub fn deserialize(
-        mut bytes: &[u8],
-        transaction_id: &[u8],
-        is_xor: bool,
-    ) -> Result<SocketAddr, Error> {
+    pub fn deserialize(mut bytes: &[u8], transaction_id: &[u8], is_xor: bool) -> Result<SocketAddr, Error> {
         if bytes.len() < 4 {
             return Err(Error::InvalidInput);
         }
@@ -216,11 +199,7 @@ impl XAddress {
             port,
         );
 
-        Ok(if is_xor {
-            xor(&addr, transaction_id)
-        } else {
-            addr
-        })
+        Ok(if is_xor { xor(&addr, transaction_id) } else { addr })
     }
 }
 

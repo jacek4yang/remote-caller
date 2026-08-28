@@ -27,10 +27,7 @@ impl<'a> MessageEncoder<'a> {
         bytes.put_u32(MAGIC_NUMBER);
         bytes.put(transaction_id.as_slice());
 
-        Self {
-            bytes,
-            transaction_id,
-        }
+        Self { bytes, transaction_id }
     }
 
     /// rely on old message to create new message.
@@ -64,10 +61,7 @@ impl<'a> MessageEncoder<'a> {
         bytes.put_u16(0);
         bytes.put_u32(MAGIC_NUMBER);
         bytes.put(transaction_id);
-        Self {
-            bytes,
-            transaction_id,
-        }
+        Self { bytes, transaction_id }
     }
 
     /// append attribute.
@@ -430,11 +424,7 @@ impl<'a> Message<'a> {
 
         // create multiple submit.
         let size_buf = (self.size + 4).to_be_bytes();
-        let body = [
-            &self.bytes[0..2],
-            &size_buf,
-            &self.bytes[4..self.size as usize],
-        ];
+        let body = [&self.bytes[0..2], &size_buf, &self.bytes[4..self.size as usize]];
 
         // digest the message buffer.
         {

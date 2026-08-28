@@ -56,10 +56,7 @@ impl ProviderStream for MaybeSslStream {
 
         // The buffer is resized to the actual size of the message, which is determined by the first 4 bytes of the message.
         if size > Buffer::MAX_MESSAGE_SIZE {
-            return Err(anyhow!(
-                "message size {} exceeds the maximum allowed size",
-                size
-            ));
+            return Err(anyhow!("message size {} exceeds the maximum allowed size", size));
         }
 
         // SAFETY: The buffer is initialized with zeroes and the length is set to
@@ -122,13 +119,10 @@ impl ProviderServer for TcpServer {
         #[cfg(feature = "ssl")]
         let acceptor = if let Some(ssl) = &options.ssl {
             Some(TlsAcceptor::from(Arc::new(
-                ServerConfig::builder()
-                    .with_no_client_auth()
-                    .with_single_cert(
-                        CertificateDer::pem_file_iter(ssl.certificate_chain.clone())?
-                            .collect::<Result<Vec<_>, _>>()?,
-                        PrivateKeyDer::from_pem_file(ssl.private_key.clone())?,
-                    )?,
+                ServerConfig::builder().with_no_client_auth().with_single_cert(
+                    CertificateDer::pem_file_iter(ssl.certificate_chain.clone())?.collect::<Result<Vec<_>, _>>()?,
+                    PrivateKeyDer::from_pem_file(ssl.private_key.clone())?,
+                )?,
             )))
         } else {
             None

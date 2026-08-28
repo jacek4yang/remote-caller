@@ -23,9 +23,8 @@ use tonic::{
 use tonic::transport::{Certificate, ClientTlsConfig, Identity, ServerTlsConfig};
 
 use sdk::protos::{
-    BindAddress, GetTurnPasswordRequest, TurnAllocatedEvent, TurnChannelBindEvent,
-    TurnCreatePermissionEvent, TurnDestroyEvent, TurnRefreshEvent, TurnServerInfo, TurnSession,
-    TurnSessionStatistics,
+    BindAddress, GetTurnPasswordRequest, TurnAllocatedEvent, TurnChannelBindEvent, TurnCreatePermissionEvent,
+    TurnDestroyEvent, TurnRefreshEvent, TurnServerInfo, TurnSession, TurnSessionStatistics,
     turn_hooks_service_client::TurnHooksServiceClient,
     turn_service_server::{TurnService, TurnServiceServer},
 };
@@ -127,10 +126,7 @@ impl TurnService for RpcService {
         }))
     }
 
-    async fn get_session(
-        &self,
-        request: Request<sdk::protos::Identifier>,
-    ) -> Result<Response<TurnSession>, Status> {
+    async fn get_session(&self, request: Request<sdk::protos::Identifier>) -> Result<Response<TurnSession>, Status> {
         if let Some(Session::Authenticated {
             username,
             allocated_port,
@@ -141,10 +137,7 @@ impl TurnService for RpcService {
         }) = self
             .service
             .get_session_manager()
-            .get_session(
-                &Identifier::try_from(request.into_inner())
-                    .map_err(|e| Status::internal(e.to_string()))?,
-            )
+            .get_session(&Identifier::try_from(request.into_inner()).map_err(|e| Status::internal(e.to_string()))?)
             .get_ref()
         {
             Ok(Response::new(TurnSession {
@@ -175,10 +168,10 @@ impl TurnService for RpcService {
         &self,
         request: Request<sdk::protos::Identifier>,
     ) -> Result<Response<TurnSessionStatistics>, Status> {
-        if let Some(counts) = self.statistics.get(
-            &Identifier::try_from(request.into_inner())
-                .map_err(|e| Status::internal(e.to_string()))?,
-        ) {
+        if let Some(counts) = self
+            .statistics
+            .get(&Identifier::try_from(request.into_inner()).map_err(|e| Status::internal(e.to_string()))?)
+        {
             Ok(Response::new(TurnSessionStatistics {
                 received_bytes: counts.received_bytes as u64,
                 send_bytes: counts.send_bytes as u64,
@@ -191,13 +184,9 @@ impl TurnService for RpcService {
         }
     }
 
-    async fn destroy_session(
-        &self,
-        request: Request<sdk::protos::Identifier>,
-    ) -> Result<Response<()>, Status> {
+    async fn destroy_session(&self, request: Request<sdk::protos::Identifier>) -> Result<Response<()>, Status> {
         if self.service.get_session_manager().refresh(
-            &Identifier::try_from(request.into_inner())
-                .map_err(|e| Status::internal(e.to_string()))?,
+            &Identifier::try_from(request.into_inner()).map_err(|e| Status::internal(e.to_string()))?,
             0,
         ) {
             Ok(Response::new(()))
@@ -237,9 +226,9 @@ impl RpcHooksService {
                         ClientTlsConfig::new()
                             .ca_certificate(Certificate::from_pem(ssl.certificate_chain.clone()))
                             .domain_name(
-                                url::Url::parse(&hooks.endpoint)?.domain().ok_or_else(|| {
-                                    anyhow::anyhow!("Invalid hooks server domain")
-                                })?,
+                                url::Url::parse(&hooks.endpoint)?
+                                    .domain()
+                                    .ok_or_else(|| anyhow::anyhow!("Invalid hooks server domain"))?,
                             ),
                     )?;
                 }
@@ -258,21 +247,13 @@ impl RpcHooksService {
                 tokio::spawn(async move {
                     while let Some(event) = rx.recv().await {
                         if match event {
-                            HooksEvent::Allocated(event) => {
-                                client.on_allocated_event(Request::new(event)).await
-                            }
-                            HooksEvent::ChannelBind(event) => {
-                                client.on_channel_bind_event(Request::new(event)).await
-                            }
+                            HooksEvent::Allocated(event) => client.on_allocated_event(Request::new(event)).await,
+                            HooksEvent::ChannelBind(event) => client.on_channel_bind_event(Request::new(event)).await,
                             HooksEvent::CreatePermission(event) => {
                                 client.on_create_permission_event(Request::new(event)).await
                             }
-                            HooksEvent::Refresh(event) => {
-                                client.on_refresh_event(Request::new(event)).await
-                            }
-                            HooksEvent::Destroy(event) => {
-                                client.on_destroy_event(Request::new(event)).await
-                            }
+                            HooksEvent::Refresh(event) => client.on_refresh_event(Request::new(event)).await,
+                            HooksEvent::Destroy(event) => client.on_destroy_event(Request::new(event)).await,
                         }
                         .is_err()
                         {

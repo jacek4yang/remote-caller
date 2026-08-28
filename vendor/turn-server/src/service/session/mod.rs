@@ -235,8 +235,9 @@ where
                             .read()
                             .iter()
                             .filter(|(_, v)| match v {
-                                Session::New { expires, .. }
-                                | Session::Authenticated { expires, .. } => *expires <= now,
+                                Session::New { expires, .. } | Session::Authenticated { expires, .. } => {
+                                    *expires <= now
+                                }
                             })
                             .for_each(|(k, _)| identifiers.push(*k));
                     }
@@ -469,10 +470,7 @@ where
 
         // Get the current user's password from an external handler and create a
         // digest.
-        let password = self
-            .handler
-            .get_password(identifier, username, algorithm)
-            .await?;
+        let password = self.handler.get_password(identifier, username, algorithm).await?;
 
         // Record a new session.
         {
@@ -606,8 +604,7 @@ where
             // Records the port assigned to the current session and resets the alive time.
             let port = self.port_allocator.lock().allocate(None)?;
             *allocated_port = Some(port);
-            let lifetime = u64::from(lifetime.unwrap_or(DEFAULT_SESSION_LIFETIME as u32))
-                .min(MAX_SESSION_LIFETIME);
+            let lifetime = u64::from(lifetime.unwrap_or(DEFAULT_SESSION_LIFETIME as u32)).min(MAX_SESSION_LIFETIME);
             *expires = self.timer.get() + lifetime;
 
             // Write the allocation port binding table.
@@ -815,8 +812,7 @@ where
         // Records the channel used for the current session.
         {
             if let Some(Session::Authenticated {
-                channel_relay_table,
-                ..
+                channel_relay_table, ..
             }) = self.sessions.write().get_mut(identifier)
             {
                 // Finds the address of the bound opposing port.
@@ -929,20 +925,17 @@ where
         let session = self.sessions.read();
 
         if let Session::Authenticated {
-            channel_relay_table,
-            ..
+            channel_relay_table, ..
         } = session.get(identifier)?
         {
             let peer = channel_relay_table.get(&channel)?;
 
             if let Session::Authenticated {
-                channel_relay_table,
-                ..
+                channel_relay_table, ..
             } = session.get(peer)?
             {
                 // Find the channel bound to the current client.
-                let (peer_channel, _) =
-                    channel_relay_table.iter().find(|(_, v)| *v == identifier)?;
+                let (peer_channel, _) = channel_relay_table.iter().find(|(_, v)| *v == identifier)?;
 
                 Some((*peer_channel, *peer))
             } else {
@@ -1123,9 +1116,7 @@ where
 
         if lifetime == 0 {
             self.remove_session(&[*identifier]);
-        } else if let Some(Session::Authenticated { expires, .. }) =
-            self.sessions.write().get_mut(identifier)
-        {
+        } else if let Some(Session::Authenticated { expires, .. }) = self.sessions.write().get_mut(identifier) {
             *expires = self.timer.get() + lifetime as u64;
         } else {
             return false;

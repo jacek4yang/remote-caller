@@ -217,10 +217,7 @@ where
                     .nonce(),
             );
 
-            message.append::<PasswordAlgorithms>(vec![
-                PasswordAlgorithm::Md5,
-                PasswordAlgorithm::Sha256,
-            ]);
+            message.append::<PasswordAlgorithms>(vec![PasswordAlgorithm::Md5, PasswordAlgorithm::Sha256]);
         }
 
         message.flush(None).ok()?;
@@ -257,8 +254,7 @@ where
     T: ServiceHandler,
 {
     {
-        let mut message =
-            MessageEncoder::extend(BINDING_RESPONSE, req.payload, req.response_buffer);
+        let mut message = MessageEncoder::extend(BINDING_RESPONSE, req.payload, req.response_buffer);
 
         message.append::<XorMappedAddress>(req.state.id.source);
         message.append::<MappedAddress>(req.state.id.source);
@@ -317,10 +313,7 @@ where
                 .state
                 .interfaces
                 .iter()
-                .filter(|addr| {
-                    addr.transport == request_transport
-                        && addr.external.ip().family() == request_family
-                })
+                .filter(|addr| addr.transport == request_transport && addr.external.ip().family() == request_family)
                 .choose(&mut rand::rng())
             {
                 ip = addr.external.ip();
@@ -353,13 +346,10 @@ where
         return reject(req, ErrorType::AllocationQuotaReached);
     };
 
-    req.state
-        .handler
-        .on_allocated(&req.state.id, username, port);
+    req.state.handler.on_allocated(&req.state.id, username, port);
 
     {
-        let mut message =
-            MessageEncoder::extend(ALLOCATE_RESPONSE, req.payload, req.response_buffer);
+        let mut message = MessageEncoder::extend(ALLOCATE_RESPONSE, req.payload, req.response_buffer);
 
         message.append::<XorRelayedAddress>(SocketAddr::new(xor_relayed_ip, port));
         message.append::<XorMappedAddress>(req.state.id.source);
@@ -432,9 +422,7 @@ where
         return reject(req, ErrorType::Forbidden);
     }
 
-    req.state
-        .handler
-        .on_create_permission(&req.state.id, username, &ports);
+    req.state.handler.on_create_permission(&req.state.id, username, &ports);
 
     {
         MessageEncoder::extend(CREATE_PERMISSION_RESPONSE, req.payload, req.response_buffer)
@@ -500,17 +488,11 @@ where
         return reject(req, ErrorType::Unauthorized);
     };
 
-    if !req
-        .state
-        .manager
-        .bind_channel(&req.state.id, peer.port(), number)
-    {
+    if !req.state.manager.bind_channel(&req.state.id, peer.port(), number) {
         return reject(req, ErrorType::Forbidden);
     }
 
-    req.state
-        .handler
-        .on_channel_bind(&req.state.id, username, number);
+    req.state.handler.on_channel_bind(&req.state.id, username, number);
 
     {
         MessageEncoder::extend(CHANNEL_BIND_RESPONSE, req.payload, req.response_buffer)
@@ -643,13 +625,10 @@ where
         return reject(req, ErrorType::AllocationMismatch);
     }
 
-    req.state
-        .handler
-        .on_refresh(&req.state.id, username, lifetime);
+    req.state.handler.on_refresh(&req.state.id, username, lifetime);
 
     {
-        let mut message =
-            MessageEncoder::extend(REFRESH_RESPONSE, req.payload, req.response_buffer);
+        let mut message = MessageEncoder::extend(REFRESH_RESPONSE, req.payload, req.response_buffer);
 
         message.append::<Lifetime>(lifetime);
         message.flush(Some(&password)).ok()?;

@@ -8,9 +8,7 @@ use axum::{
     routing::get,
 };
 
-use prometheus::{
-    Encoder, IntCounter, IntGauge, TextEncoder, register_int_counter, register_int_gauge,
-};
+use prometheus::{Encoder, IntCounter, IntGauge, TextEncoder, register_int_counter, register_int_gauge};
 
 use tokio::net::TcpListener;
 
@@ -76,10 +74,7 @@ impl Metrics {
             total: Counts::new("total")?,
             tcp: Counts::new("tcp")?,
             udp: Counts::new("udp")?,
-            allocated: register_int_gauge!(
-                "allocated",
-                "The number of allocated ports, count = 16383"
-            )?,
+            allocated: register_int_gauge!("allocated", "The number of allocated ports, count = 16383")?,
         })
     }
 

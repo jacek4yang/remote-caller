@@ -187,9 +187,9 @@ use tonic::{
 };
 
 use self::protos::{
-    GetTurnPasswordRequest, GetTurnPasswordResponse, Identifier, PasswordAlgorithm,
-    TurnAllocatedEvent, TurnChannelBindEvent, TurnCreatePermissionEvent, TurnDestroyEvent,
-    TurnRefreshEvent, TurnServerInfo, TurnSession, TurnSessionStatistics,
+    GetTurnPasswordRequest, GetTurnPasswordResponse, Identifier, PasswordAlgorithm, TurnAllocatedEvent,
+    TurnChannelBindEvent, TurnCreatePermissionEvent, TurnDestroyEvent, TurnRefreshEvent, TurnServerInfo, TurnSession,
+    TurnSessionStatistics,
     turn_hooks_service_server::{TurnHooksService, TurnHooksServiceServer},
     turn_service_client::TurnServiceClient,
 };
@@ -216,15 +216,8 @@ impl TurnService {
     }
 
     /// get the session statistics
-    pub async fn get_session_statistics(
-        &mut self,
-        id: Identifier,
-    ) -> Result<TurnSessionStatistics, Status> {
-        Ok(self
-            .0
-            .get_session_statistics(Request::new(id))
-            .await?
-            .into_inner())
+    pub async fn get_session_statistics(&mut self, id: Identifier) -> Result<TurnSessionStatistics, Status> {
+        Ok(self.0.get_session_statistics(Request::new(id)).await?.into_inner())
     }
 
     /// destroy the session
@@ -260,12 +253,7 @@ impl Deref for Password {
     }
 }
 
-pub fn generate_password(
-    username: &str,
-    password: &str,
-    realm: &str,
-    algorithm: PasswordAlgorithm,
-) -> Password {
+pub fn generate_password(username: &str, password: &str, realm: &str, algorithm: PasswordAlgorithm) -> Password {
     match algorithm {
         PasswordAlgorithm::Md5 => {
             let mut hasher = Md5::new();
@@ -311,23 +299,15 @@ impl<T: TurnHooksServer + 'static> TurnHooksService for TurnHooksServerInner<T> 
             .await
         {
             Ok(Response::new(GetTurnPasswordResponse {
-                password: generate_password(
-                    &request.username,
-                    &credential.password,
-                    &credential.realm,
-                    algorithm,
-                )
-                .to_vec(),
+                password: generate_password(&request.username, &credential.password, &credential.realm, algorithm)
+                    .to_vec(),
             }))
         } else {
             Err(Status::not_found("Message integrity not found"))
         }
     }
 
-    async fn on_allocated_event(
-        &self,
-        request: Request<TurnAllocatedEvent>,
-    ) -> Result<Response<()>, Status> {
+    async fn on_allocated_event(&self, request: Request<TurnAllocatedEvent>) -> Result<Response<()>, Status> {
         let request = request.into_inner();
         self.0
             .on_allocated(
@@ -342,10 +322,7 @@ impl<T: TurnHooksServer + 'static> TurnHooksService for TurnHooksServerInner<T> 
         Ok(Response::new(()))
     }
 
-    async fn on_channel_bind_event(
-        &self,
-        request: Request<TurnChannelBindEvent>,
-    ) -> Result<Response<()>, Status> {
+    async fn on_channel_bind_event(&self, request: Request<TurnChannelBindEvent>) -> Result<Response<()>, Status> {
         let request = request.into_inner();
         self.0
             .on_channel_bind(
@@ -378,10 +355,7 @@ impl<T: TurnHooksServer + 'static> TurnHooksService for TurnHooksServerInner<T> 
         Ok(Response::new(()))
     }
 
-    async fn on_refresh_event(
-        &self,
-        request: Request<TurnRefreshEvent>,
-    ) -> Result<Response<()>, Status> {
+    async fn on_refresh_event(&self, request: Request<TurnRefreshEvent>) -> Result<Response<()>, Status> {
         let request = request.into_inner();
         self.0
             .on_refresh(
@@ -396,10 +370,7 @@ impl<T: TurnHooksServer + 'static> TurnHooksService for TurnHooksServerInner<T> 
         Ok(Response::new(()))
     }
 
-    async fn on_destroy_event(
-        &self,
-        request: Request<TurnDestroyEvent>,
-    ) -> Result<Response<()>, Status> {
+    async fn on_destroy_event(&self, request: Request<TurnDestroyEvent>) -> Result<Response<()>, Status> {
         let request = request.into_inner();
         self.0
             .on_destroy(
@@ -499,11 +470,7 @@ pub trait TurnHooksServer: Send + Sync {
     /// start the turn hooks server
     ///
     /// This function will start the turn hooks server on the given server and listen address.
-    async fn start_with_server(
-        self,
-        server: &mut Server,
-        listen: SocketAddr,
-    ) -> Result<(), tonic::transport::Error>
+    async fn start_with_server(self, server: &mut Server, listen: SocketAddr) -> Result<(), tonic::transport::Error>
     where
         Self: Sized + 'static,
     {

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use ahash::{HashMap, HashMapExt};
 use parking_lot::RwLock;
-use tokio::sync::mpsc::{Receiver, Sender, error::TrySendError, channel};
+use tokio::sync::mpsc::{Receiver, Sender, channel, error::TrySendError};
 
 use crate::{server::buffer::Buffer, service::session::Identifier};
 

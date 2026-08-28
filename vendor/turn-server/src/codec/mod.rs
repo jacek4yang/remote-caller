@@ -104,24 +104,15 @@ impl Attributes {
     /// Note: This function will only look for the first matching property in
     /// the list and return it.
     pub fn get(&self, kind: &AttributeType) -> Option<Range<usize>> {
-        self.0
-            .iter()
-            .find(|(k, _)| k == kind)
-            .map(|(_, v)| v.clone())
+        self.0.iter().find(|(k, _)| k == kind).map(|(_, v)| v.clone())
     }
 
     /// Gets all the values of an attribute from a list.
     ///
     /// Normally a stun message can have multiple attributes with the same name,
     /// and this function will all the values of the current attribute.
-    pub fn get_all<'a>(
-        &'a self,
-        kind: &'a AttributeType,
-    ) -> impl Iterator<Item = &'a Range<usize>> {
-        self.0
-            .iter()
-            .filter(move |(k, _)| k == kind)
-            .map(|(_, v)| v)
+    pub fn get_all<'a>(&'a self, kind: &'a AttributeType) -> impl Iterator<Item = &'a Range<usize>> {
+        self.0.iter().filter(move |(k, _)| k == kind).map(|(_, v)| v)
     }
 
     pub fn clear(&mut self) {
