@@ -17,27 +17,27 @@ use num_enum::TryFromPrimitive;
 ///      300 response allows an on-path attacker to falsify a 300
 ///      response thus causing subsequent STUN messages to be sent to a
 ///      victim.
-///      
+///
 /// 400  Bad Request: The request was malformed.  The client SHOULD NOT
 ///      retry the request without modification from the previous
 ///      attempt.  The server may not be able to generate a valid
 ///      MESSAGE-INTEGRITY or MESSAGE-INTEGRITY-SHA256 for this error, so
 ///      the client MUST NOT expect a valid MESSAGE-INTEGRITY or MESSAGE-
 ///      INTEGRITY-SHA256 attribute on this response.
-///      
+///
 /// 401  Unauthenticated: The request did not contain the correct
 ///      credentials to proceed.  The client should retry the request
 ///      with proper credentials.
-///      
+///
 /// 420  Unknown Attribute: The server received a STUN packet containing
 ///      a comprehension-required attribute that it did not understand.
 ///      The server MUST put this unknown attribute in the UNKNOWN-
 ///      ATTRIBUTE attribute of its error response.
-///      
+///
 /// 438  Stale Nonce: The NONCE used by the client was no longer valid.
 ///      The client should retry, using the NONCE provided in the
 ///      response.
-///      
+///
 /// 500  Server Error: The server has suffered a temporary error.  The
 ///      client should try again.
 const fn errno(code: u16) -> u16 {

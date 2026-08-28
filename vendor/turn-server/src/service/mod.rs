@@ -120,7 +120,7 @@ pub trait ServiceHandler: Send + Sync + 'static {
     /// If the message is valid and the server is capable of carrying out the
     /// request, then the server installs or refreshes a permission for the
     /// IP address contained in each XOR-PEER-ADDRESS attribute as described
-    /// in [Section 9](https://tools.ietf.org/html/rfc8656#section-9).  
+    /// in [Section 9](https://tools.ietf.org/html/rfc8656#section-9).
     /// The port portion of each attribute is ignored and may be any arbitrary
     /// value.
     ///

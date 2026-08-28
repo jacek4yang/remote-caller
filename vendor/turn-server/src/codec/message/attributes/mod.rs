@@ -985,7 +985,7 @@ impl<'a> Attribute<'a> for ChannelNumber {
 /// for the ICE-CONTROLLED attribute, the number is used for solving role
 /// conflicts.  An agent MUST use the same number for all Binding
 /// requests, for all streams, within an ICE session, unless it has
-/// received a 487 response, in which case it MUST change the number.  
+/// received a 487 response, in which case it MUST change the number.
 /// The agent MAY change the number when an ICE restart occurs.
 #[derive(Debug, Clone, Copy)]
 pub struct IceControlling;
