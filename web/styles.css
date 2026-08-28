@@ -177,6 +177,11 @@ input::placeholder { color: #6f8094; }
   .mobile-only { display: none; }
 }
 
+@media (max-width: 360px) {
+  .controls { gap: 7px; }
+  .control-button { width: 52px; min-width: 0; padding-inline: 4px; font-size: .62rem; }
+}
+
 @media (orientation: landscape) and (max-height: 560px) {
   .call { grid-template-rows: auto minmax(0, 1fr); padding: 10px; }
   .controls { position: absolute; right: 18px; top: 50%; flex-direction: column; transform: translateY(-50%); }
