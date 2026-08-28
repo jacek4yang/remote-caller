@@ -297,6 +297,7 @@ mod tests {
         http::{Request, header},
     };
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tower::ServiceExt;
 
     const PASSWORD: &str = "correct horse battery staple";
@@ -621,19 +622,36 @@ mod tests {
 
     #[tokio::test]
     async fn websocket_rejects_invalid_ticket_before_upgrade() {
-        let request = Request::builder()
-            .uri("/ws?ticket=invalid")
-            .header(header::CONNECTION, "upgrade")
-            .header(header::UPGRADE, "websocket")
-            .header("sec-websocket-version", "13")
-            .header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
-            .body(Body::empty())
-            .expect("test request must build");
-        let response = app(AppState::new(config_with_user()))
-            .oneshot(request)
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("request must complete");
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            .expect("test listener must bind");
+        let address = listener.local_addr().expect("test address must resolve");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app(AppState::new(config_with_user())))
+                .await
+                .expect("test server must run");
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(address)
+            .await
+            .expect("test client must connect");
+        let request = format!(
+            "GET /ws?ticket=invalid HTTP/1.1\r\nHost: {address}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+        );
+        stream
+            .write_all(request.as_bytes())
+            .await
+            .expect("test handshake must write");
+        let mut response = [0_u8; 512];
+        let size =
+            tokio::time::timeout(std::time::Duration::from_secs(2), stream.read(&mut response))
+                .await
+                .expect("test handshake must not time out")
+                .expect("test response must read");
+        assert!(
+            String::from_utf8_lossy(&response[..size]).starts_with("HTTP/1.1 401")
+        );
+        server.abort();
     }
 
     #[test]
