@@ -72,7 +72,9 @@ jobs:
           cp .env.example README.md CONTRIBUTING.md LICENSE "dist/$root/"
           tar -C dist -czf "$archive" "$root"
           sha256sum "$archive" > SHA256SUMS
-          tar -tzf "$archive" | grep -q "^$root/bin/remote-caller$"
+          tar -tzf "$archive" > archive-contents.txt
+          grep -qx "$root/bin/remote-caller" archive-contents.txt
+          rm archive-contents.txt
           test -s "$archive"
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@5be0e66d93ac7ed76da52eca8bb058f665c3a5fe # v2.4.2
