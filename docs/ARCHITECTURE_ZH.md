@@ -61,10 +61,11 @@ room 成员                   2
 单 WS 有效信令速率          30 msg/s
 单 WS 消息                 64 KiB
 HTTP request body            8 KiB
-TURN relay ports            16
+TURN virtual relay IDs      16
+TURN sessions/transports    64
 ```
 
-房间、单用户连接和 ticket 使用 RAII/semaphore 释放容量。创建 ticket 时会清理已过期而从未消费的 ticket，避免容量被永久占住。
+房间、单用户连接和 ticket 使用 RAII/semaphore 释放容量。创建 ticket 时会清理已过期而从未消费的 ticket，避免容量被永久占住。vendored TURN patch 同时限制 UDP source tuple、TCP/TLS connection 和已认证/未认证 session；未认证 challenge 30 秒过期，allocation 最长 1 小时。
 
 这些数字不是为了吞吐最大化，而是因为私人双人实例没有理由允许攻击者建立成千上万的应用层状态。
 
@@ -84,7 +85,7 @@ WebRTC:
   多次失败       -> 重建 RTCPeerConnection -> 重新协商
 ```
 
-Offer glare 使用 polite/impolite 角色和 rollback 处理，避免双方同时协商导致随机失败。Nginx 将 WS read/send timeout 设为 24 小时，应用 Ping 会持续刷新空闲计时器。
+Offer glare 使用 polite/impolite 角色和 rollback 处理，避免双方同时协商导致随机失败。Nginx 将 WS read/send timeout 设为 75 秒；应用每 20 秒发送 Ping，健康连接会持续刷新该计时器，而失活连接能及时回收。
 
 已有 P2P 媒体在信令进程短暂重启时通常仍能继续；需要重新协商或网络切换时客户端再连接信令服务。
 
@@ -101,7 +102,7 @@ Rust HTTP/WS: 127.0.0.1:8080
 Nginx:        80/443 public
 TURN:         3478 UDP/TCP public
 TURNS:        5349 TCP public
-Relay:        configured UDP range public
+Relay IDs:    49160-49175 virtual; not firewall ports
 ```
 
 不要把 8080 暴露到公网，否则会绕过 Nginx 的连接、请求速率、body size 和 TLS 边界。
@@ -112,6 +113,7 @@ Nginx 示例启用登录/ticket 限流、每 IP 连接上限、HSTS、CSP、Perm
 
 - 公网端口一定会被扫描；“安全”意味着把未授权操作和资源消耗限制住，而不是没人探测。
 - 固定 TURN credential 一旦泄露，要靠 secret rotation 废弃；不要把这个实例当开放 TURN。
+- 当前 embedded TURN 把 relay port 当作同一进程内的虚拟 allocation ID，只在已连接到同一实例的 allocation 之间转发。它不在这些 ID 上 bind 系统 socket，也不向任意公网 peer 转发；ICE 必须形成 relay-to-relay candidate pair。该限制降低滥用面，但真实浏览器/NAT 兼容性必须实机验证。
 - 单机无法抵御服务器宕机、机房故障、DDoS 塞满公网带宽等故障域。
 - WebRTC DTLS-SRTP 加密媒体，但本项目没有实现独立的端到端身份指纹核验协议。
 - 浏览器/PWA 无法保证手机锁屏后无限时长通话；若需要系统电话级后台能力必须开发原生客户端。

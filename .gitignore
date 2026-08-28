@@ -1,8 +1,8 @@
 /target/
 /target-wsl/
 /dist/
-/remote-caller-linux-release.tar.gz
-/remote-caller-linux-release.tar.gz.sha256
+/remote-caller-v*-linux-x86_64.tar.gz
+/SHA256SUMS
 /.env
 /.env.*
 !/.env.example

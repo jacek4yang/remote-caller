@@ -2,23 +2,33 @@
 set -eu
 
 TARGET_DIR=${CARGO_TARGET_DIR:-target}
+VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+TAG="v$VERSION"
+ROOT="remote-caller-$TAG-linux-x86_64"
+ARCHIVE="$ROOT.tar.gz"
 
+cargo fmt --all -- --check
+cargo fmt --manifest-path vendor/turn-server/Cargo.toml --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features
-# This release is intentionally tied to the build server CPU for maximum x86_64 performance.
-# Override RUSTFLAGS with target-cpu=x86-64-v3 when the artifact must run on multiple servers.
-RUSTFLAGS="${RUSTFLAGS:--C target-cpu=native}" cargo build --locked --release --target x86_64-unknown-linux-gnu
+RUSTFLAGS="${RUSTFLAGS:--C target-cpu=x86-64-v2}" \
+  cargo build --release --locked --target x86_64-unknown-linux-gnu
 
-rm -rf dist
-mkdir -p dist/bin dist/web dist/deploy/nginx dist/deploy/systemd dist/docs dist/scripts
-cp "$TARGET_DIR/x86_64-unknown-linux-gnu/release/remote-caller" dist/bin/
-cp -R web/. dist/web/
-cp deploy/nginx/remote-caller.conf dist/deploy/nginx/
-cp deploy/nginx/bootstrap.conf dist/deploy/nginx/
-cp deploy/systemd/remote-caller.service deploy/systemd/remote-caller.env.example dist/deploy/systemd/
-cp docs/*.md dist/docs/
-cp scripts/test-production-wsl.sh dist/scripts/
-cp README.md LICENSE dist/
+rm -rf -- dist
+mkdir -p "dist/$ROOT/bin" "dist/$ROOT/web" "dist/$ROOT/deploy/nginx" \
+  "dist/$ROOT/deploy/systemd" "dist/$ROOT/docs" "dist/$ROOT/scripts"
+install -m 0755 "$TARGET_DIR/x86_64-unknown-linux-gnu/release/remote-caller" \
+  "dist/$ROOT/bin/remote-caller"
+cp -R web/. "dist/$ROOT/web/"
+cp deploy/nginx/*.conf "dist/$ROOT/deploy/nginx/"
+cp deploy/systemd/remote-caller.service deploy/systemd/remote-caller.env.example \
+  "dist/$ROOT/deploy/systemd/"
+cp docs/*.md "dist/$ROOT/docs/"
+install -m 0755 scripts/test-production-wsl.sh "dist/$ROOT/scripts/test-production-wsl.sh"
+cp .env.example README.md CONTRIBUTING.md LICENSE "dist/$ROOT/"
 
-tar -C dist -czf remote-caller-linux-release.tar.gz .
-sha256sum remote-caller-linux-release.tar.gz > remote-caller-linux-release.tar.gz.sha256
-printf '%s\n' "Created remote-caller-linux-release.tar.gz"
+tar -C dist -czf "$ARCHIVE" "$ROOT"
+sha256sum "$ARCHIVE" > SHA256SUMS
+tar -tzf "$ARCHIVE" | grep -q "^$ROOT/bin/remote-caller$"
+test -s "$ARCHIVE"
+printf '%s\n' "Created $ARCHIVE and SHA256SUMS"

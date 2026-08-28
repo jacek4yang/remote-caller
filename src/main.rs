@@ -39,14 +39,16 @@ async fn main() {
         .await
         .expect("failed to bind server");
     tracing::info!(%bind_addr, "remote-caller listening");
-    let http_server = axum::serve(listener, app(AppState::new(config))).with_graceful_shutdown(shutdown_signal());
+    let state = AppState::new(config);
+    let http_server = axum::serve(listener, app(state.clone())).with_graceful_shutdown(shutdown_signal(state.clone()));
 
     #[cfg(target_os = "linux")]
     if embedded_turn {
         tokio::select! {
             result = http_server => result.expect("HTTP server failed"),
-            result = remote_caller::embedded_turn::run(turn_config) => {
-                panic!("embedded TURN server failed: {}", result.err().unwrap_or_else(|| "unexpected exit".into()));
+            result = remote_caller::embedded_turn::run(turn_config, state) => {
+                tracing::error!(error = %result.err().unwrap_or_else(|| "unexpected exit".into()), "embedded TURN server stopped");
+                std::process::exit(1);
             }
         }
         return;
@@ -57,7 +59,7 @@ async fn main() {
     http_server.await.expect("HTTP server failed");
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(state: AppState) {
     let ctrl_c = async { signal::ctrl_c().await.expect("failed to install Ctrl+C handler") };
     #[cfg(unix)]
     let terminate = async {
@@ -69,5 +71,9 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
     tokio::select! { _ = ctrl_c => {}, _ = terminate => {} }
+    state.begin_shutdown();
     tracing::info!("shutdown signal received");
+    // Give upgraded WebSockets a short chance to send a close frame before
+    // Axum stops accepting and the runtime drops remaining I/O tasks.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 }

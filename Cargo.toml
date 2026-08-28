@@ -29,6 +29,11 @@ tower = { version = "0.5", features = ["util"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 turn-server = { version = "4.1.4", default-features = false, features = ["udp", "tcp", "ssl"] }
 
+[patch.crates-io]
+# Keep this narrow local patch until upstream exposes hard session/lifetime
+# limits. See vendor/turn-server/PATCHES.md.
+turn-server = { path = "vendor/turn-server" }
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

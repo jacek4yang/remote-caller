@@ -1,163 +1,230 @@
 # 单服务器 Linux x86_64 部署指南
 
-最终只运行两个进程：Nginx 托管前端与 HTTPS，一个 Rust ELF 同时提供鉴权、WebSocket 信令、STUN 和 TURN 中继。无需 Docker、Kubernetes 或 Coturn。
+生产只运行 Nginx 和一个 Rust ELF。Nginx 提供静态前端、HTTPS 和 WSS；Rust 进程在回环地址提供鉴权/信令，并直接在公网地址提供 STUN/TURN。无需 Docker、Kubernetes、Redis、数据库或 Coturn 服务。
 
-## 1. 网络拓扑与 DNS
+以下示例使用：
 
-```text
-call.example.com  ──A记录──> 服务器公网 IPv4
-                                  │
-                 ┌────────────────┼─────────────────┐
-                 │                │                 │
-             Nginx 80/443   Rust HTTP 127.0.0.1   同一 Rust 进程
-             静态前端/TLS        :8080            TURN 3478/5349
-                                                   UDP 49160-49175
-```
+    域名：call.example.com（必须替换）
+    公网 IPv4：203.0.113.10（必须替换）
+    安装目录：/opt/remote-caller
+    静态文件：/var/www/remote-caller/web
 
-DNS 控制台只需一条 A 记录：主机记录 `call`，值为服务器公网 IPv4，初始 TTL 300。使用 Cloudflare 时设置为“仅 DNS / 灰色云”。TURN 不是 HTTP，不能穿过普通 CDN 代理。只有服务器和防火墙完整支持 IPv6 时才添加 AAAA。
+## 1. DNS、系统包与防火墙
 
-不建议直接使用 IP：iOS/Android 浏览器需要可信 HTTPS 才开放摄像头和麦克风，域名证书最稳定。若服务器位于家用路由器后，必须具有真实公网 IP，并将下列端口转发到 Linux 内网 IP；运营商 CGNAT 环境不能直接作为 TURN 服务端。
+为域名添加指向 VPS 公网 IPv4 的 A 记录。普通 HTTP CDN 不能代理 TURN；使用 Cloudflare 时应选择“仅 DNS”。如果 VPS 在 NAT 后面，必须有可入站的公网 IP 和正确端口转发；CGNAT 不适合作为该 TURN 服务端。
 
-## 2. 防火墙和依赖
+Ubuntu 22.04/24.04：
 
-```bash
-sudo ufw allow 22/tcp
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw allow 3478/tcp
-sudo ufw allow 3478/udp
-sudo ufw allow 5349/tcp
-sudo ufw allow 49160:49175/udp
-sudo ufw enable
+    sudo apt update
+    sudo apt install nginx certbot curl openssl
 
-sudo apt update
-sudo apt install nginx certbot build-essential cmake pkg-config curl
-```
+先确保 SSH 规则不会把自己锁在服务器外，然后开放：
 
-TURN 的 TLS 内核使用 AWS-LC，因此源码构建需要 C 编译器和 CMake。发布包运行时不需要 Rust、CMake或编译器。
+    sudo ufw allow 80/tcp
+    sudo ufw allow 443/tcp
+    sudo ufw allow 3478/udp
+    sudo ufw allow 3478/tcp
+    sudo ufw allow 5349/tcp
+    sudo ufw enable
+    sudo ufw status
 
-## 3. 首次签发证书
+端口含义：
 
-```bash
-sudo install -d /var/www/letsencrypt
-sudo cp deploy/nginx/bootstrap.conf /etc/nginx/conf.d/remote-caller.conf
-# 将 call.example.com 替换为真实域名
-sudo nginx -t && sudo systemctl reload nginx
-sudo certbot certonly --webroot -w /var/www/letsencrypt -d call.example.com
-```
+| 公网端口 | 是否需要 | 用途 |
+|---|---|---|
+| TCP 80 | 证书 HTTP-01/跳转时需要 | ACME 和 HTTPS 跳转 |
+| TCP 443 | 必需 | HTTPS/WSS |
+| UDP 3478 | 必需 | STUN/TURN 首选通道 |
+| TCP 3478 | 必需 | TURN/TCP 回退 |
+| TCP 5349 | 配置 TURN TLS 时需要 | TURNS |
 
-最终 Nginx 配置引用证书，因此必须先用纯 HTTP 引导配置取得证书。
+绝不能开放 Rust 内部 TCP 8080。此版本的 TURN_RELAY_MIN_PORT/TURN_RELAY_MAX_PORT 是进程内虚拟 allocation ID，经 3478/5349 listener 复用，并不会 bind 对应的 Linux UDP/TCP socket；因此不要开放 49160–49175。
 
-## 4. 构建原生二进制
+## 2. 获取并校验 v1.0.0
 
-```bash
-chmod +x scripts/build-release.sh
-./scripts/build-release.sh
-sha256sum -c remote-caller-linux-release.tar.gz.sha256
-```
+从 GitHub Release 下载同一版本的两个文件，然后在同一目录执行：
 
-脚本运行测试，再用 `target-cpu=native`、fat LTO、单 codegen unit、panic abort 和符号裁剪构建。该产物绑定构建机指令集。跨机器分发使用 `RUSTFLAGS='-C target-cpu=x86-64-v3' ./scripts/build-release.sh`；不支持 AVX2 的旧服务器使用 x86-64-v2。Git tag 流水线自动生成兼容 x86-64-v2 的 Linux 包及 SHA-256 文件。
+    sha256sum -c SHA256SUMS
+    tar -xzf remote-caller-v1.0.0-linux-x86_64.tar.gz
+    cd remote-caller-v1.0.0-linux-x86_64
+    ./bin/remote-caller --help >/dev/null 2>&1 || test $? -eq 2
 
-## 5. 创建账号与密钥
+最后一条只验证 Linux loader 能启动二进制；普通服务启动需要完整环境配置。发布二进制以 Ubuntu 22.04、x86-64-v2 为兼容基线。
 
-```bash
-openssl rand -base64 48  # JWT_SECRET
-openssl rand -base64 48  # TURN_SECRET
-printf '%s' '管理员密码至少十个字符' | dist/bin/remote-caller hash-password
-printf '%s' '另一位用户的独立密码' | dist/bin/remote-caller hash-password
-```
+如从源码构建，需要 Rust 1.85+、C/C++ toolchain、CMake 和 pkg-config：
 
-两个密码只保存 `$argon2id$...` 哈希。JWT 与 TURN 密钥必须不同且不能提交 Git。
+    sudo apt install build-essential cmake pkg-config
+    chmod +x scripts/build-release.sh
+    ./scripts/build-release.sh
+    sha256sum -c SHA256SUMS
 
-这是私有双人服务，不要开放注册或把 `/api/config` 暴露给未登录用户。内嵌 TURN 使用 HMAC 凭证；升级版本、怀疑令牌泄露或成员变化时，应生成新的 `TURN_SECRET` 并重启服务，使所有旧 TURN 凭证立即失效。
+本地脚本与 tag workflow 都生成 remote-caller-v1.0.0-linux-x86_64.tar.gz。
 
-## 6. 安装二进制和证书
+## 3. 首次签发 TLS 证书
 
-```bash
-sudo useradd --system --home /opt/remote-caller --shell /usr/sbin/nologin remote-caller
-sudo install -d -o remote-caller -g remote-caller /opt/remote-caller/bin
-sudo install -m 0755 dist/bin/remote-caller /opt/remote-caller/bin/remote-caller
-sudo install -d -o root -g remote-caller -m 0750 /etc/remote-caller/tls
-sudo install -o root -g remote-caller -m 0640 /etc/letsencrypt/live/call.example.com/fullchain.pem /etc/remote-caller/tls/fullchain.pem
-sudo install -o root -g remote-caller -m 0640 /etc/letsencrypt/live/call.example.com/privkey.pem /etc/remote-caller/tls/privkey.pem
-sudo cp deploy/systemd/remote-caller.env.example /etc/remote-caller/remote-caller.env
-sudo chmod 0600 /etc/remote-caller/remote-caller.env
-sudo cp deploy/systemd/remote-caller.service /etc/systemd/system/
-```
+    CALL_DOMAIN=call.example.com
+    sudo install -d /var/www/letsencrypt
+    sed "s/call\.example\.com/$CALL_DOMAIN/g" deploy/nginx/bootstrap.conf |
+      sudo tee /etc/nginx/conf.d/remote-caller.conf >/dev/null
+    sudo nginx -t
+    sudo systemctl reload nginx
+    sudo certbot certonly --webroot -w /var/www/letsencrypt -d "$CALL_DOMAIN"
 
-编辑环境文件：替换域名和 `TURN_PUBLIC_IP`；填入 JWT/TURN 密钥、管理员哈希以及 `USERS_JSON` 中另一位用户哈希；保留哈希和 JSON 外侧单引号；保持 `BIND_ADDR=127.0.0.1:8080`、`SERVE_STATIC=false`、`EMBEDDED_TURN=true`。
+先用 HTTP-only bootstrap 配置签发证书。最终 Nginx 文件保留相同的 ACME webroot location，因此后续 certbot renew 不会被 HTTPS 跳转破坏。
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now remote-caller
-sudo systemctl status remote-caller
-curl -fsS http://127.0.0.1:8080/health/ready
-```
+## 4. 生成两个密码哈希和两个 secret
 
-TURN 的 UDP、TCP 或 TLS 任一监听任务异常退出时，Rust 主进程会退出，由 systemd 整体重启，避免半健康状态。Tokio 默认按可用 CPU 并行调度；16 个中继端口足够双人多 ICE candidate，同时限制资源滥用面。
+在不会记录终端输入的交互 shell 中执行：
 
-## 7. 启用最终 Nginx
+    read -rsp 'Caller one password: ' PASSWORD_ONE; echo
+    HASH_ONE=$(printf '%s' "$PASSWORD_ONE" | ./bin/remote-caller hash-password)
+    unset PASSWORD_ONE
+    read -rsp 'Caller two password: ' PASSWORD_TWO; echo
+    HASH_TWO=$(printf '%s' "$PASSWORD_TWO" | ./bin/remote-caller hash-password)
+    unset PASSWORD_TWO
+    JWT_VALUE=$(openssl rand -base64 48)
+    TURN_VALUE=$(openssl rand -base64 48)
+    test "$JWT_VALUE" != "$TURN_VALUE"
 
-```bash
-sudo install -d /var/www/remote-caller/web
-sudo cp -a dist/web/. /var/www/remote-caller/web/
-sudo cp deploy/nginx/remote-caller.conf /etc/nginx/conf.d/remote-caller.conf
-# 替换 call.example.com
-sudo nginx -t && sudo systemctl reload nginx
-```
+密码必须是 10–256 字符。JWT_VALUE 和 TURN_VALUE 必须不同。不要把密码、hash 或 secret 提交到 Git、发到聊天中或写进 Release 包。
 
-Nginx 只代理 HTTP API、WebSocket、探针和指标。TURN 由同一 Rust 进程直接监听 3478/5349，不经过 Nginx，避免额外复制和协议转换。
+AUTH_USERS_JSON 必须包含两个不同账号，例如：
 
-## 8. 自动续期证书
+    AUTH_USERS_JSON='[{"username":"caller-one","displayName":"Caller One","passwordHash":"$argon2id$REPLACE_WITH_FIRST_HASH","role":"user"},{"username":"caller-two","displayName":"Caller Two","passwordHash":"$argon2id$REPLACE_WITH_SECOND_HASH","role":"user"}]'
 
-```bash
-sudo tee /etc/letsencrypt/renewal-hooks/deploy/restart-remote-caller.sh >/dev/null <<'EOF'
-#!/bin/sh
-install -o root -g remote-caller -m 0640 /etc/letsencrypt/live/call.example.com/fullchain.pem /etc/remote-caller/tls/fullchain.pem
-install -o root -g remote-caller -m 0640 /etc/letsencrypt/live/call.example.com/privkey.pem /etc/remote-caller/tls/privkey.pem
-systemctl restart remote-caller
-systemctl reload nginx
-EOF
-sudo chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/restart-remote-caller.sh
-sudo certbot renew --dry-run
-```
+## 5. 安装文件与配置
 
-Nginx 直接读取 Let's Encrypt 路径；Rust 低权限进程只读取属于 `root:remote-caller` 的安全副本。
+    CALL_DOMAIN=call.example.com
+    sudo useradd --system --home /opt/remote-caller --shell /usr/sbin/nologin remote-caller 2>/dev/null || true
+    sudo install -d -o root -g root /opt/remote-caller/bin
+    sudo install -m 0755 bin/remote-caller /opt/remote-caller/bin/remote-caller
+    sudo install -d -o root -g root /var/www/remote-caller/web
+    sudo cp -a web/. /var/www/remote-caller/web/
 
-## 9. 发布、回滚与验收
+    sudo install -d -o root -g remote-caller -m 0750 /etc/remote-caller/tls
+    sudo install -o root -g remote-caller -m 0640 \
+      "/etc/letsencrypt/live/$CALL_DOMAIN/fullchain.pem" \
+      /etc/remote-caller/tls/fullchain.pem
+    sudo install -o root -g remote-caller -m 0640 \
+      "/etc/letsencrypt/live/$CALL_DOMAIN/privkey.pem" \
+      /etc/remote-caller/tls/privkey.pem
 
-```bash
-sudo install -m 0755 dist/bin/remote-caller /opt/remote-caller/bin/remote-caller.new
-sudo mv /opt/remote-caller/bin/remote-caller.new /opt/remote-caller/bin/remote-caller
-sudo systemctl restart remote-caller
-sudo cp -a dist/web/. /var/www/remote-caller/web/
-sudo nginx -t && sudo systemctl reload nginx
-```
+    sed "s/call\.example\.com/$CALL_DOMAIN/g" deploy/systemd/remote-caller.env.example |
+      sudo tee /etc/remote-caller/remote-caller.env >/dev/null
+    sudo chmod 0600 /etc/remote-caller/remote-caller.env
+    sudo install -m 0644 deploy/systemd/remote-caller.service /etc/systemd/system/remote-caller.service
 
-保留上一版 ELF 即可快速回滚。已建立的点对点媒体通常不因短暂信令重启而中断。
+用 sudoedit /etc/remote-caller/remote-caller.env 完成以下替换：
 
-```bash
-dig +short call.example.com A
-curl -fsS https://call.example.com/health/ready
-openssl s_client -connect call.example.com:5349 -servername call.example.com </dev/null
-sudo ss -lntup | grep -E ':80|:443|:8080|:3478|:5349'
-sudo journalctl -u remote-caller -f
-```
+- JWT_SECRET → JWT_VALUE 的值；
+- TURN_SECRET → TURN_VALUE 的值；
+- TURN_PUBLIC_IP → VPS 的实际公网 IPv4；
+- 两个 passwordHash placeholder → HASH_ONE、HASH_TWO 的完整 Argon2id PHC 字符串；
+- 根据需要修改两个 username/displayName。
 
-最后在 iPhone Safari ↔ Android Chrome 验证 1080p/60fps、Wi-Fi ↔ 5G、TURN/UDP、TURN/TCP、TURNS、摄像头切换、后台恢复和[弱网测试矩阵](PERFORMANCE_TEST_ZH.md)。
+保持 BIND_ADDR=127.0.0.1:8080、SERVE_STATIC=false、EMBEDDED_TURN=true。确认环境文件中没有任何 placeholder：
 
-## 10. WSL 全栈生产形态验收
+    if sudo grep -n REPLACE_WITH /etc/remote-caller/remote-caller.env; then
+      echo 'configuration still contains placeholders' >&2
+      exit 1
+    fi
 
-仓库包含 `scripts/test-production-wsl.sh`。它会创建临时 systemd 服务账户和证书链，按正式文件安装 Nginx 与二进制，逐项检查 HTTPS、安全响应头、登录成功/失败、ICE 配置、WebSocket 101、TURN UDP/TCP 完整中继、TURNS 证书和 STUN 协议帧、并发 HTTP 基线以及 systemd 重启恢复，结束后自动清理服务。Coturn 软件包在这里仅提供外部测试客户端，服务会被强制停用；生产服务器不需要它。
+不要打印完整环境文件到日志或工单。
 
-在启用 systemd 的 Ubuntu WSL 中执行：
+## 6. 安装最终 Nginx 和启动 systemd
 
-```bash
-sudo apt update
-sudo apt install nginx openssl curl coturn wrk build-essential cmake pkg-config
-sudo systemctl disable --now coturn
-chmod +x scripts/test-production-wsl.sh
-sudo WORKSPACE="$PWD" CARGO_TARGET_DIR="$PWD/target-wsl" scripts/test-production-wsl.sh
-```
+    CALL_DOMAIN=call.example.com
+    sed "s/call\.example\.com/$CALL_DOMAIN/g" deploy/nginx/remote-caller.conf |
+      sudo tee /etc/nginx/conf.d/remote-caller.conf >/dev/null
+    sudo nginx -t
+    sudo systemctl reload nginx
 
-测试要求先按第 4 节生成 release ELF。若直接验收解压后的发布包，增加 `REMOTE_CALLER_BIN="$PWD/bin/remote-caller"`。成功时输出 `PASS`，原始证书、Nginx 检查、套接字、TURN 丢包、并发压测和 journal 日志保留在 `/tmp/remote-caller-e2e/`。WSL 验收能发现 Linux ABI、权限、证书、反向代理、端口和服务恢复问题，但不能代替真实域名、公网 NAT、iPhone/Android 编解码器和长时间弱网验收。
+    sudo systemd-analyze verify /etc/systemd/system/remote-caller.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now remote-caller
+    sudo systemctl status remote-caller --no-pager
+    curl -fsS http://127.0.0.1:8080/health/ready
+    curl -fsS "https://$CALL_DOMAIN/health/ready"
+
+Readiness 在 HTTP 已接受正常流量且 embedded TURN 的 TCP listener 已成功 bind 后才返回 200。TURN 子任务意外退出会结束主进程，随后由 systemd 重启整套服务。
+
+## 7. 证书自动续期
+
+创建 hook 前把其中的 call.example.com 替换成实际域名：
+
+    sudoedit /etc/letsencrypt/renewal-hooks/deploy/restart-remote-caller.sh
+
+文件内容：
+
+    #!/bin/sh
+    set -eu
+    install -o root -g remote-caller -m 0640 \
+      /etc/letsencrypt/live/call.example.com/fullchain.pem \
+      /etc/remote-caller/tls/fullchain.pem
+    install -o root -g remote-caller -m 0640 \
+      /etc/letsencrypt/live/call.example.com/privkey.pem \
+      /etc/remote-caller/tls/privkey.pem
+    systemctl restart remote-caller
+    systemctl reload nginx
+
+    sudo chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/restart-remote-caller.sh
+    sudo certbot renew --dry-run
+
+## 8. 部署后验证
+
+    CALL_DOMAIN=call.example.com
+    getent ahostsv4 "$CALL_DOMAIN"
+    curl -fsS "https://$CALL_DOMAIN/health/live" -o /dev/null
+    curl -fsS "https://$CALL_DOMAIN/health/ready"
+    curl -fsSI "https://$CALL_DOMAIN/" | grep -Ei \
+      'strict-transport-security|content-security-policy|x-content-type-options|referrer-policy'
+    openssl s_client -connect "$CALL_DOMAIN:5349" -servername "$CALL_DOMAIN" </dev/null
+    sudo ss -lntup | grep -E ':(80|443|8080|3478|5349)\b'
+    sudo journalctl -u remote-caller -n 200 --no-pager
+
+ss 应显示 8080 只监听 127.0.0.1。还必须用两个真实账号和两台真实设备验证：同 room 登录、第三账号拒绝、TURN/UDP、TURN/TCP、TURNS、Wi-Fi/蜂窝切换、摄像头切换和长时间前台通话。虚拟 relay port 模型要求双方从同一实例取得 relay allocation，并选择 relay-to-relay candidate pair；这项真实公网兼容性不能由单元测试证明。
+
+## 9. 升级
+
+先在新 Release 目录校验 SHA256SUMS，然后：
+
+    sudo cp /opt/remote-caller/bin/remote-caller /opt/remote-caller/bin/remote-caller.previous
+    sudo rm -rf /var/www/remote-caller/web.previous
+    sudo cp -a /var/www/remote-caller/web /var/www/remote-caller/web.previous
+    sudo install -m 0755 bin/remote-caller /opt/remote-caller/bin/remote-caller.new
+    sudo mv /opt/remote-caller/bin/remote-caller.new /opt/remote-caller/bin/remote-caller
+    sudo cp -a web/. /var/www/remote-caller/web/
+    sudo systemctl restart remote-caller
+    sudo nginx -t
+    sudo systemctl reload nginx
+    curl -fsS http://127.0.0.1:8080/health/ready
+
+如版本修改了示例配置，先人工比较，不要覆盖真实 secret：
+
+    diff -u deploy/systemd/remote-caller.env.example /etc/remote-caller/remote-caller.env || true
+
+## 10. 回滚
+
+    sudo cp /opt/remote-caller/bin/remote-caller.previous /opt/remote-caller/bin/remote-caller
+    sudo rm -rf /var/www/remote-caller/web
+    sudo mv /var/www/remote-caller/web.previous /var/www/remote-caller/web
+    sudo systemctl restart remote-caller
+    sudo nginx -t
+    sudo systemctl reload nginx
+    curl -fsS http://127.0.0.1:8080/health/ready
+
+应用没有数据库迁移。短暂重启期间已建立的 P2P 媒体可能继续，但需要重新协商或 TURN 的通话会受影响。
+
+## 11. 可选 WSL 生产形态验收
+
+scripts/test-production-wsl.sh 会安装临时配置/证书，验证 HTTPS header、登录、ticket/WebSocket、STUN、TURN UDP/TCP/TLS、错误 TURN 密码、并发 HTTP 和 systemd stop/start，最后清理服务。coturn 软件包在此仅提供外部协议测试客户端；Coturn daemon 会被停用，生产不需要该包。
+
+在启用 systemd 的 Ubuntu WSL 中：
+
+    sudo apt update
+    sudo apt install nginx openssl curl coturn wrk build-essential cmake pkg-config
+    sudo systemctl disable --now coturn
+    chmod +x scripts/test-production-wsl.sh
+    sudo WORKSPACE="$PWD" CARGO_TARGET_DIR="$PWD/target-wsl" scripts/test-production-wsl.sh
+
+Release 解压目录可额外设置 REMOTE_CALLER_BIN="$PWD/bin/remote-caller"。WSL 测试不能代替真实域名、公网 NAT、iPhone/Android 或多小时弱网验证。

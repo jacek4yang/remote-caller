@@ -1,0 +1,23 @@
+[package]
+name = "turn-server-sdk"
+version = "0.3.0"
+edition = "2024"
+description = "Client SDK for interacting with the turn-server gRPC API."
+license = "MIT"
+repository = "https://github.com/mycrl/turn-rs"
+readme = "README.md"
+
+[dependencies]
+prost = "0.14"
+prost-types = "0.14"
+tonic = { version = "0.14", features = ["transport"] }
+tonic-prost = "0.14"
+md-5 = "0.10"
+sha2 = "0.10.9"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tonic = { version = "0.14", features = ["deflate"] }
+
+[build-dependencies]
+tonic-prost-build = "0.14"

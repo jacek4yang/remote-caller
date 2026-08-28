@@ -15,6 +15,9 @@ use uuid::Uuid;
 
 use crate::config::Config;
 
+const JWT_ISSUER: &str = "remote-caller";
+const JWT_AUDIENCE: &str = "remote-caller-web";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
     /// Unique session identifier. Signaling uses this as the peer id.
@@ -23,8 +26,10 @@ pub struct Claims {
     pub user: String,
     pub name: String,
     pub role: String,
-    pub iat: usize,
-    pub exp: usize,
+    pub iss: String,
+    pub aud: String,
+    pub iat: u64,
+    pub exp: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,7 +44,7 @@ pub struct SessionResponse {
     #[serde(rename = "clientId")]
     pub client_id: String,
     #[serde(rename = "expiresAt")]
-    pub expires_at: usize,
+    pub expires_at: u64,
     #[serde(rename = "displayName")]
     pub display_name: String,
     pub role: String,
@@ -89,10 +94,11 @@ pub fn login(config: &Config, request: &LoginRequest) -> Result<SessionResponse,
 
     // Always perform one Argon2 verification, even for an unknown username.
     // This avoids a cheap username-enumeration timing oracle.
+    let fallback = config.auth_users.first().ok_or(ApiError::Internal)?;
     let user = config.auth_users.iter().find(|user| user.username == request.username);
     let password_hash = user
         .map(|user| user.password_hash.as_str())
-        .unwrap_or_else(|| config.auth_users[0].password_hash.as_str());
+        .unwrap_or(fallback.password_hash.as_str());
     let parsed_hash = PasswordHash::new(password_hash).map_err(|_| ApiError::Internal)?;
     let password_ok = Argon2::default()
         .verify_password(request.password.as_bytes(), &parsed_hash)
@@ -104,14 +110,16 @@ pub fn login(config: &Config, request: &LoginRequest) -> Result<SessionResponse,
         return Err(ApiError::Unauthorized);
     }
 
-    let now = unix_time() as usize;
+    let now = unix_time();
     let client_id = Uuid::new_v4().to_string();
-    let expires_at = now + config.session_ttl_secs as usize;
+    let expires_at = now.saturating_add(config.session_ttl_secs);
     let claims = Claims {
         sub: client_id.clone(),
         user: user.username.clone(),
         name: user.display_name.clone(),
         role: user.role.clone(),
+        iss: JWT_ISSUER.into(),
+        aud: JWT_AUDIENCE.into(),
         iat: now,
         exp: expires_at,
     };
@@ -142,13 +150,27 @@ pub fn hash_password(password: &str) -> Result<String, String> {
 }
 
 pub fn verify_token(config: &Config, token: &str) -> Result<Claims, ApiError> {
-    decode::<Claims>(
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.set_issuer(&[JWT_ISSUER]);
+    validation.set_audience(&[JWT_AUDIENCE]);
+    validation.set_required_spec_claims(&["exp", "sub", "iat", "iss", "aud"]);
+    validation.leeway = 30;
+    let claims = decode::<Claims>(
         token,
         &DecodingKey::from_secret(config.jwt_secret.as_bytes()),
-        &Validation::new(Algorithm::HS256),
+        &validation,
     )
     .map(|data| data.claims)
-    .map_err(|_| ApiError::Unauthorized)
+    .map_err(|_| ApiError::Unauthorized)?;
+    let now = unix_time();
+    if claims.sub.is_empty()
+        || claims.iat > now.saturating_add(60)
+        || claims.exp <= claims.iat
+        || claims.exp.saturating_sub(claims.iat) > config.session_ttl_secs
+    {
+        return Err(ApiError::Unauthorized);
+    }
+    Ok(claims)
 }
 
 /// Derive a stable, high-entropy TURN credential for one configured account.

@@ -29,6 +29,7 @@ const QUALITY_TIERS = [
   { name: '1080P 30FPS 高清', maxBitrate: 3_500_000, maxFramerate: 30, scale: 1, width: 1920, height: 1080 },
   { name: '720P 30FPS 弱网保护', maxBitrate: 1_800_000, maxFramerate: 30, scale: 1.5, width: 1280, height: 720 },
 ];
+const MAX_PENDING_ICE_CANDIDATES = 256;
 
 function makeRoom() {
   const bytes = crypto.getRandomValues(new Uint8Array(8));
@@ -162,7 +163,12 @@ async function connectSocket() {
       // Serialize SDP and ICE operations. WebSocket message callbacks themselves
       // are not awaited by the browser and otherwise race setRemoteDescription.
       state.signalChain = state.signalChain
-        .then(() => onSignal(JSON.parse(data)))
+        .then(() => {
+          if (socket !== state.socket || generation !== state.socketGeneration || typeof data !== 'string' || data.length > 70_000) return;
+          const message = JSON.parse(data);
+          if (!message || typeof message !== 'object' || typeof message.type !== 'string') throw new Error('invalid signaling envelope');
+          return onSignal(message);
+        })
         .catch(error => {
           console.error('signal handling failed', error);
           showToast('连接协商失败，正在恢复');
@@ -189,7 +195,8 @@ async function connectSocket() {
 function scheduleSocketReconnect() {
   if (!state.active) return;
   setStatus('信令重连中', true);
-  const delay = Math.min(1000 * 2 ** state.reconnectAttempts++, 10000);
+  const base = Math.min(1000 * 2 ** state.reconnectAttempts++, 10000);
+  const delay = Math.round(base * (.8 + Math.random() * .4));
   clearTimeout(state.reconnectTimer);
   state.reconnectTimer = setTimeout(() => void connectSocket(), delay);
 }
@@ -201,7 +208,7 @@ async function onSignal(message) {
   if (message.type === 'peer-joined') {
     showPeer(message.displayName);
     await ensurePeerConnection();
-    await sendOffer(false);
+    if (!await sendOffer(false)) scheduleIceRestart(500);
   } else if (message.type === 'offer') {
     showPeer(message.displayName);
     const pc = await ensurePeerConnection();
@@ -230,8 +237,11 @@ async function onSignal(message) {
     if (state.ignoreOffer) return;
     const pc = await ensurePeerConnection();
     if (!pc.remoteDescription) {
+      if (state.pendingIceCandidates.length >= MAX_PENDING_ICE_CANDIDATES) {
+        throw new Error('too many queued ICE candidates');
+      }
       state.pendingIceCandidates.push(message.payload);
-    } else {
+    } else if (candidateMatchesRemoteDescription(pc, message.payload)) {
       await pc.addIceCandidate(message.payload);
     }
   } else if (message.type === 'peer-left') {
@@ -245,8 +255,17 @@ async function onSignal(message) {
 async function flushPendingIceCandidates(pc) {
   const candidates = state.pendingIceCandidates.splice(0);
   for (const candidate of candidates) {
+    if (!candidateMatchesRemoteDescription(pc, candidate)) continue;
     try { await pc.addIceCandidate(candidate); } catch (error) { console.warn('ICE candidate rejected', error); }
   }
+}
+
+function candidateMatchesRemoteDescription(pc, candidate) {
+  const remoteUfrags = new Set(Array.from(
+    pc.remoteDescription?.sdp?.matchAll(/^a=ice-ufrag:(.+)$/gmi) || [],
+    match => match[1].trim(),
+  ));
+  return !candidate.usernameFragment || !remoteUfrags.size || remoteUfrags.has(candidate.usernameFragment);
 }
 
 async function ensurePeerConnection() {
@@ -269,6 +288,7 @@ async function ensurePeerConnection() {
     if (state.active && state.peerPresent) void sendOffer(false);
   });
   pc.addEventListener('connectionstatechange', () => {
+    if (pc !== state.pc) return;
     const labels = { connected: ['通话中', false], connecting: ['建立连接', true], disconnected: ['连接中断', true], failed: ['连接失败', true] };
     const next = labels[pc.connectionState];
     if (next) setStatus(...next);
@@ -305,6 +325,7 @@ function scheduleIceRestart(delay) {
   clearTimeout(state.iceRestartTimer);
   state.iceRestartTimer = setTimeout(async () => {
     if (!state.active || !state.peerPresent) return;
+    if (state.pc?.connectionState === 'connected') return;
     if (state.socket?.readyState !== WebSocket.OPEN) {
       scheduleIceRestart(1500);
       return;
@@ -320,7 +341,13 @@ function scheduleIceRestart(delay) {
       console.warn('ICE restart failed', error);
       return false;
     });
-    if (!sent) scheduleIceRestart(1000);
+    if (!sent) {
+      scheduleIceRestart(1000);
+    } else {
+      // An ICE-restart offer needs a bounded watchdog; connectionState does
+      // not necessarily emit a second failure event after a failed restart.
+      scheduleIceRestart(Math.min(3000 * 2 ** (state.iceRestartAttempts - 1), 12000));
+    }
   }, delay);
 }
 
@@ -384,7 +411,10 @@ async function scoreCodec(codec, preferred) {
 }
 
 function sendSignal(type, payload) {
-  if (state.socket?.readyState === WebSocket.OPEN) state.socket.send(JSON.stringify({ type, payload }));
+  if (state.socket?.readyState !== WebSocket.OPEN) return;
+  const message = JSON.stringify({ type, payload });
+  if (message.length <= 65_536) state.socket.send(message);
+  else showToast('协商数据异常过大，正在重建连接');
 }
 
 function showPeer(name) {
@@ -441,16 +471,22 @@ els.switchCamera.addEventListener('click', async () => {
   const oldTrack = state.localStream?.getVideoTracks()[0];
   if (!oldTrack) return;
   state.cameraFacing = state.cameraFacing === 'user' ? 'environment' : 'user';
+  let newTrack;
   try {
     const replacementStream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints() });
-    const newTrack = replacementStream.getVideoTracks()[0];
+    [newTrack] = replacementStream.getVideoTracks();
+    if (!newTrack) throw new Error('replacement camera did not provide a video track');
     const sender = state.pc?.getSenders().find(item => item.track?.kind === 'video');
     await sender?.replaceTrack(newTrack);
     state.localStream.removeTrack(oldTrack);
     oldTrack.stop();
     state.localStream.addTrack(newTrack);
     els.localVideo.srcObject = state.localStream;
-  } catch { showToast('无法切换摄像头'); }
+  } catch {
+    newTrack?.stop();
+    state.cameraFacing = state.cameraFacing === 'user' ? 'environment' : 'user';
+    showToast('无法切换摄像头');
+  }
 });
 
 els.share.addEventListener('click', async () => {
@@ -661,6 +697,18 @@ document.addEventListener('visibilitychange', () => {
     if (!state.socket || state.socket.readyState === WebSocket.CLOSED) void connectSocket();
   }
 });
+
+window.addEventListener('online', () => {
+  if (!state.active) return;
+  void connectSocket();
+  scheduleIceRestart(500);
+});
+window.addEventListener('offline', () => {
+  if (state.active) setStatus('网络已断开', true);
+});
+document.addEventListener('pointerdown', () => {
+  if (state.active && els.remoteVideo.srcObject) els.remoteVideo.play().catch(() => {});
+}, { passive: true });
 
 function stopMedia() {
   state.localStream?.getTracks().forEach(track => track.stop());
