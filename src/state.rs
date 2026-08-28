@@ -7,7 +7,11 @@ use dashmap::{DashMap, mapref::entry::Entry};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, broadcast};
 use uuid::Uuid;
 
-use crate::{auth::{Claims, unix_time}, config::Config, signal::ServerEvent};
+use crate::{
+    auth::{Claims, unix_time},
+    config::Config,
+    signal::ServerEvent,
+};
 
 pub struct Room {
     pub sender: broadcast::Sender<ServerEvent>,
