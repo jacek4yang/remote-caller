@@ -54,7 +54,7 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self, String> {
         // Production should expose only Nginx publicly. Safe-by-default bind.
-        let bind_addr = env::var("BIND_ADDR")
+        let bind_addr: SocketAddr = env::var("BIND_ADDR")
             .unwrap_or_else(|_| "127.0.0.1:8080".into())
             .parse()
             .map_err(|e| format!("invalid BIND_ADDR: {e}"))?;
