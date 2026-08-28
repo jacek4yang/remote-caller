@@ -14,34 +14,96 @@
 </head>
 <body>
   <main class="app-shell">
-    <section id="lobby" class="lobby" aria-labelledby="lobby-title">
-      <div class="brand"><span class="brand-mark" aria-hidden="true">R</span> Remote Caller</div>
-      <div class="hero-copy">
-        <p class="eyebrow">端到端媒体传输</p>
-        <h1 id="lobby-title">相隔很远，也像在同一间房。</h1>
-        <p class="intro">无需安装，打开链接即可进行清晰稳定的语音或视频通话。</p>
-      </div>
-      <form id="join-form" class="join-card">
-        <label for="username">账号</label>
-        <input id="username" name="username" maxlength="40" autocomplete="username" placeholder="你的专属账号" required>
-        <label for="password">密码</label>
-        <input id="password" name="password" type="password" maxlength="256" autocomplete="current-password" placeholder="输入密码" required>
-        <label for="room-id">房间号</label>
-        <div class="room-field">
-          <input id="room-id" name="room" minlength="6" maxlength="64" spellcheck="false" required>
-          <button id="new-room" class="text-button" type="button">换一个</button>
+    <section id="login-view" class="auth-view" aria-labelledby="login-title">
+      <header class="brand"><span class="brand-mark" aria-hidden="true">R</span> Remote Caller</header>
+      <div class="auth-layout">
+        <div class="hero-copy">
+          <p class="eyebrow">安全的双人通话</p>
+          <h1 id="login-title">先登录，再决定去哪个房间。</h1>
+          <p class="intro">登录后，你可以留在自己的通话工作台，随时创建、分享或加入房间。</p>
         </div>
-        <fieldset>
-          <legend>加入方式</legend>
+        <form id="login-form" class="surface auth-card">
+          <div class="card-heading">
+            <p class="section-kicker">账号登录</p>
+            <h2>欢迎回来</h2>
+            <p>使用服务器管理员为你配置的账号。</p>
+          </div>
+          <label for="username">账号</label>
+          <input id="username" name="username" maxlength="40" autocomplete="username" placeholder="你的专属账号" required>
+          <label for="password">密码</label>
+          <input id="password" name="password" type="password" maxlength="256" autocomplete="current-password" placeholder="输入密码" required>
+          <button id="login-button" class="primary-button" type="submit">登录</button>
+          <p id="login-error" class="form-error" role="alert"></p>
+          <p class="secure-note"><span aria-hidden="true">●</span> 密码和登录令牌不会写入本地存储</p>
+        </form>
+      </div>
+    </section>
+
+    <section id="dashboard-view" class="dashboard" aria-labelledby="dashboard-title" hidden>
+      <header class="dashboard-header">
+        <div class="brand"><span class="brand-mark" aria-hidden="true">R</span> Remote Caller</div>
+        <div class="account-area">
+          <div class="account-copy">
+            <span>当前账号</span>
+            <strong id="account-name"></strong>
+          </div>
+          <button id="logout-button" class="quiet-button" type="button">退出</button>
+        </div>
+      </header>
+
+      <div class="dashboard-main">
+        <div class="dashboard-copy">
+          <p class="eyebrow">通话工作台</p>
+          <h1 id="dashboard-title"><span id="welcome-name"></span>，准备好通话了吗？</h1>
+          <p>新建一个房间发给对方，或者输入你收到的房间号直接加入。</p>
+        </div>
+
+        <fieldset class="surface mode-section">
+          <legend>通话方式</legend>
           <div class="mode-picker">
-            <label><input type="radio" name="mode" value="video" checked><span>视频通话</span></label>
-            <label><input type="radio" name="mode" value="audio"><span>仅语音</span></label>
+            <label><input type="radio" name="mode" value="video" checked><span><b>视频</b><small>摄像头和麦克风</small></span></label>
+            <label><input type="radio" name="mode" value="audio"><span><b>语音</b><small>仅使用麦克风</small></span></label>
           </div>
         </fieldset>
-        <button id="join-button" class="primary-button" type="submit">进入房间</button>
-        <p id="lobby-error" class="form-error" role="alert"></p>
-        <p class="secure-note"><span aria-hidden="true">●</span> 私密空间 · 仅限已配置的账号登录</p>
-      </form>
+
+        <div class="action-grid">
+          <article class="surface action-card create-card">
+            <div class="action-icon" aria-hidden="true">＋</div>
+            <div class="card-heading">
+              <p class="section-kicker">发起通话</p>
+              <h2>新建房间</h2>
+              <p>生成一个私密房间号，先分享给对方，再进入等候。</p>
+            </div>
+            <button id="create-room-button" class="primary-button" type="button">生成房间号</button>
+
+            <div id="invite-panel" class="invite-panel" aria-live="polite" hidden>
+              <span class="invite-label">房间已准备好</span>
+              <output id="created-room-code" class="room-code"></output>
+              <div class="button-row">
+                <button id="copy-room-button" class="secondary-button" type="button">复制房间号</button>
+                <button id="share-invite-button" class="secondary-button" type="button">分享邀请</button>
+              </div>
+              <button id="enter-created-room-button" class="primary-button" type="button">进入这个房间</button>
+            </div>
+          </article>
+
+          <article class="surface action-card join-card">
+            <div class="action-icon" aria-hidden="true">→</div>
+            <div class="card-heading">
+              <p class="section-kicker">已有邀请</p>
+              <h2>加入房间</h2>
+              <p id="join-hint">输入对方发来的房间号即可加入。</p>
+            </div>
+            <form id="join-form">
+              <label for="room-id">房间号</label>
+              <input id="room-id" name="room" minlength="6" maxlength="64" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="粘贴或输入房间号" required>
+              <button id="join-button" class="primary-button" type="submit">加入房间</button>
+            </form>
+          </article>
+        </div>
+        <p id="dashboard-error" class="form-error dashboard-error" role="alert"></p>
+        <p class="dashboard-note">房间最多两人；邀请链接不包含你的账号、密码或登录令牌。</p>
+      </div>
     </section>
 
     <section id="call" class="call" aria-label="通话界面" hidden>
@@ -90,9 +152,9 @@
           <span class="control-icon" aria-hidden="true">×</span><span>挂断</span>
         </button>
       </div>
-      <div id="toast" class="toast" role="status" aria-live="polite"></div>
     </section>
   </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/app.js" defer></script>
 </body>
 </html>

@@ -1,8 +1,13 @@
 const $ = (selector) => document.querySelector(selector);
 
 const els = {
-  lobby: $('#lobby'), call: $('#call'), form: $('#join-form'), joinButton: $('#join-button'),
-  error: $('#lobby-error'), username: $('#username'), password: $('#password'), room: $('#room-id'), newRoom: $('#new-room'),
+  loginView: $('#login-view'), dashboard: $('#dashboard-view'), call: $('#call'),
+  loginForm: $('#login-form'), loginButton: $('#login-button'), loginError: $('#login-error'),
+  username: $('#username'), password: $('#password'), accountName: $('#account-name'), welcomeName: $('#welcome-name'),
+  logout: $('#logout-button'), joinForm: $('#join-form'), joinButton: $('#join-button'),
+  dashboardError: $('#dashboard-error'), joinHint: $('#join-hint'), room: $('#room-id'),
+  createRoom: $('#create-room-button'), invitePanel: $('#invite-panel'), inviteRoomCode: $('#created-room-code'),
+  copyRoom: $('#copy-room-button'), shareInvite: $('#share-invite-button'), enterCreatedRoom: $('#enter-created-room-button'),
   roomLabel: $('#room-label'), network: $('#network-badge'), share: $('#share-button'),
   localVideo: $('#local-video'), remoteVideo: $('#remote-video'), localAvatar: $('#local-avatar'),
   remotePlaceholder: $('#remote-placeholder'), remoteTitle: $('#remote-title'), remoteSubtitle: $('#remote-subtitle'),
@@ -12,6 +17,7 @@ const els = {
 
 const state = {
   token: '', clientId: '', room: '', mode: 'video', localStream: null, pc: null, socket: null,
+  displayName: '', role: '', expiresAt: 0, sessionTimer: null, draftRoom: '',
   iceServers: [], cameraFacing: 'user', active: false, reconnectAttempts: 0, reconnectTimer: null,
   socketGeneration: 0, signalChain: Promise.resolve(), pendingIceCandidates: [],
   makingOffer: false, ignoreOffer: false, polite: false, peerPresent: false,
@@ -30,6 +36,7 @@ const QUALITY_TIERS = [
   { name: '720P 30FPS 弱网保护', maxBitrate: 1_800_000, maxFramerate: 30, scale: 1.5, width: 1280, height: 720 },
 ];
 const MAX_PENDING_ICE_CANDIDATES = 256;
+const MAX_TIMEOUT = 2_147_483_647;
 
 function makeRoom() {
   const bytes = crypto.getRandomValues(new Uint8Array(8));
@@ -41,39 +48,175 @@ function sanitizeRoom(value) {
 }
 
 const params = new URLSearchParams(location.search);
-els.room.value = sanitizeRoom(params.get('room') || '') || makeRoom();
+const invitedRoom = sanitizeRoom(params.get('room') || '');
+els.room.value = invitedRoom;
 els.username.value = localStorage.getItem('remote-caller-username') || '';
-els.newRoom.addEventListener('click', () => { els.room.value = makeRoom(); });
+if (invitedRoom) els.joinHint.textContent = '邀请链接中的房间号已填好，登录后可直接加入。';
 
-els.form.addEventListener('submit', async (event) => {
+els.loginForm.addEventListener('submit', async (event) => {
   event.preventDefault();
-  els.error.textContent = '';
-  els.joinButton.disabled = true;
-  els.joinButton.textContent = '正在准备…';
-  state.room = sanitizeRoom(els.room.value);
-  state.mode = new FormData(els.form).get('mode');
+  els.loginError.textContent = '';
+  els.loginButton.disabled = true;
+  els.loginButton.textContent = '正在登录…';
   const username = els.username.value.trim();
   const password = els.password.value;
   try {
-    if (state.room.length < 6) throw new Error('房间号至少需要 6 个字符');
-    localStorage.setItem('remote-caller-username', username);
     const session = await request('/api/login', { method: 'POST', body: JSON.stringify({ username, password }) });
-    els.password.value = '';
+    const config = await request('/api/config', { headers: { Authorization: `Bearer ${session.token}` } });
+    localStorage.setItem('remote-caller-username', username);
     state.token = session.token;
     state.clientId = session.clientId;
-    const config = await request('/api/config', { headers: { Authorization: `Bearer ${state.token}` } });
+    state.displayName = session.displayName || username;
+    state.role = session.role || '';
+    state.expiresAt = session.expiresAt || 0;
     state.iceServers = config.iceServers;
+    els.password.value = '';
+    scheduleSessionExpiry();
+    showDashboard();
+  } catch (error) {
+    clearSession();
+    els.loginError.textContent = humanError(error);
+  } finally {
+    els.loginButton.disabled = false;
+    els.loginButton.textContent = '登录';
+  }
+});
+
+els.createRoom.addEventListener('click', () => showInvitation(makeRoom()));
+els.enterCreatedRoom.addEventListener('click', () => void startCall(state.draftRoom));
+els.copyRoom.addEventListener('click', () => void copyText(state.draftRoom, '房间号已复制'));
+els.shareInvite.addEventListener('click', () => void shareRoom(state.draftRoom));
+els.logout.addEventListener('click', () => logout());
+
+els.joinForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  void startCall(els.room.value);
+});
+
+function showDashboard(message = '') {
+  els.loginView.hidden = true;
+  els.call.hidden = true;
+  els.dashboard.hidden = false;
+  els.accountName.textContent = state.displayName;
+  els.welcomeName.textContent = state.displayName;
+  els.dashboardError.textContent = message;
+  if (invitedRoom && !els.room.value) els.room.value = invitedRoom;
+}
+
+function showInvitation(room) {
+  state.draftRoom = sanitizeRoom(room);
+  els.inviteRoomCode.textContent = state.draftRoom;
+  els.invitePanel.hidden = false;
+  history.replaceState({}, '', roomUrl(state.draftRoom));
+  els.invitePanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function selectedMode() {
+  return document.querySelector('input[name="mode"]:checked')?.value || 'video';
+}
+
+async function startCall(roomValue) {
+  const room = sanitizeRoom(roomValue);
+  els.dashboardError.textContent = '';
+  setRoomActionsBusy(true);
+  try {
+    if (!state.token) throw new Error('请先登录');
+    if (room.length < 6) throw new Error('房间号至少需要 6 个字符');
+    state.room = room;
+    state.mode = selectedMode();
     await acquireMedia(state.mode === 'video');
     enterCall();
     void connectSocket();
   } catch (error) {
-    els.error.textContent = humanError(error);
     stopMedia();
+    els.dashboardError.textContent = humanError(error);
   } finally {
-    els.joinButton.disabled = false;
-    els.joinButton.textContent = '进入房间';
+    setRoomActionsBusy(false);
   }
-});
+}
+
+function setRoomActionsBusy(busy) {
+  els.createRoom.disabled = busy;
+  els.joinButton.disabled = busy;
+  els.enterCreatedRoom.disabled = busy;
+  els.joinButton.textContent = busy ? '正在准备…' : '加入房间';
+  els.enterCreatedRoom.textContent = busy ? '正在准备…' : '进入这个房间';
+}
+
+function roomUrl(room) {
+  const url = new URL(location.pathname, location.origin);
+  url.searchParams.set('room', room);
+  return url.href;
+}
+
+async function shareRoom(room) {
+  const url = roomUrl(room);
+  const shareData = { title: '加入我的通话', text: `房间号：${room}`, url };
+  try {
+    if (navigator.share) await navigator.share(shareData);
+    else await copyText(url, '邀请链接已复制');
+  } catch (error) {
+    if (error.name !== 'AbortError') showToast('分享失败，请复制房间号');
+  }
+}
+
+async function copyText(value, successMessage) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+    } else {
+      const field = document.createElement('textarea');
+      field.value = value;
+      field.setAttribute('readonly', '');
+      field.style.position = 'fixed';
+      field.style.opacity = '0';
+      document.body.append(field);
+      field.select();
+      if (!document.execCommand('copy')) throw new Error('copy command failed');
+      field.remove();
+    }
+    showToast(successMessage);
+  } catch {
+    showToast('复制失败，请手动复制');
+  }
+}
+
+function scheduleSessionExpiry() {
+  clearTimeout(state.sessionTimer);
+  if (!state.expiresAt) return;
+  const delay = Math.min(Math.max(0, state.expiresAt * 1000 - Date.now()), MAX_TIMEOUT);
+  state.sessionTimer = setTimeout(() => {
+    if (Date.now() < state.expiresAt * 1000) scheduleSessionExpiry();
+    else logout('登录已过期，请重新登录');
+  }, delay);
+}
+
+function clearSession() {
+  clearTimeout(state.sessionTimer);
+  state.sessionTimer = null;
+  state.token = '';
+  state.clientId = '';
+  state.displayName = '';
+  state.role = '';
+  state.expiresAt = 0;
+  state.iceServers = [];
+}
+
+function logout(message = '') {
+  const room = state.active ? state.room : sanitizeRoom(els.room.value || state.draftRoom);
+  stopCall();
+  clearSession();
+  els.dashboard.hidden = true;
+  els.call.hidden = true;
+  els.loginView.hidden = false;
+  els.loginError.textContent = message;
+  if (room) {
+    els.room.value = room;
+    history.replaceState({}, '', roomUrl(room));
+  } else {
+    history.replaceState({}, '', location.pathname);
+  }
+}
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
@@ -113,6 +256,8 @@ async function acquireMedia(withVideo) {
   state.localStream.getVideoTracks().forEach(track => { track.contentHint = 'detail'; });
   els.localVideo.srcObject = state.localStream;
   updateLocalPreview();
+  setPressed(els.mic, false, '静音');
+  setPressed(els.camera, !withVideo, withVideo ? '摄像头' : '开启视频');
 }
 
 function videoConstraints() {
@@ -125,9 +270,9 @@ function videoConstraints() {
 
 function enterCall() {
   state.active = true;
-  history.replaceState({}, '', `${location.pathname}?room=${encodeURIComponent(state.room)}`);
+  history.replaceState({}, '', roomUrl(state.room));
   els.roomLabel.textContent = `房间 ${state.room}`;
-  els.lobby.hidden = true;
+  els.dashboard.hidden = true;
   els.call.hidden = false;
   requestWakeLock();
 }
@@ -183,8 +328,11 @@ async function connectSocket() {
   } catch (error) {
     if (!state.active || generation !== state.socketGeneration) return;
     if (error.code === 'unauthorized') {
-      showToast('登录已过期，请重新进入房间');
-      hangup();
+      logout('登录已过期，请重新登录');
+      return;
+    }
+    if (error.code === 'room_full') {
+      returnToDashboard('房间已满（当前版本支持两人通话）');
       return;
     }
     console.warn('signaling connection failed', error);
@@ -489,13 +637,7 @@ els.switchCamera.addEventListener('click', async () => {
   }
 });
 
-els.share.addEventListener('click', async () => {
-  const shareData = { title: '加入我的通话', text: '点击链接加入 Remote Caller 通话', url: location.href };
-  try {
-    if (navigator.share) await navigator.share(shareData);
-    else { await navigator.clipboard.writeText(location.href); showToast('房间链接已复制'); }
-  } catch (error) { if (error.name !== 'AbortError') showToast('复制失败，请从地址栏复制链接'); }
-});
+els.share.addEventListener('click', () => void shareRoom(state.room));
 
 if (document.pictureInPictureEnabled && els.remoteVideo.requestPictureInPicture) {
   els.pip.hidden = false;
@@ -512,11 +654,18 @@ els.hangup.addEventListener('click', hangup);
 window.addEventListener('pagehide', stopCall);
 
 function hangup() {
+  const room = state.room;
   stopCall();
-  history.replaceState({}, '', location.pathname);
-  els.call.hidden = true;
-  els.lobby.hidden = false;
-  els.room.value = makeRoom();
+  showDashboard();
+  showInvitation(room);
+}
+
+function returnToDashboard(message) {
+  const room = state.room;
+  stopCall();
+  els.room.value = room;
+  history.replaceState({}, '', roomUrl(room));
+  showDashboard(message);
 }
 
 function stopCall() {
@@ -529,14 +678,15 @@ function stopCall() {
   stopMedia();
   state.pc = null;
   state.socket = null;
-  state.token = '';
-  state.clientId = '';
   state.signalChain = Promise.resolve();
   state.pendingIceCandidates = [];
   state.wakeLock?.release().catch(() => {});
   state.wakeLock = null;
   stopNetworkMonitor();
   resetPeer();
+  setPressed(els.mic, false, '静音');
+  setPressed(els.camera, false, '摄像头');
+  els.remoteVideo.classList.remove('video-off');
 }
 
 async function configureAudioSender(pc) {
