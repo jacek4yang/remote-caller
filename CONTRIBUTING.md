@@ -26,16 +26,16 @@ docs(deploy): clarify embedded TURN firewall rules
 
 ```powershell
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-features
-cargo build --release
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-features
+cargo build --release --locked
 ```
 
 PR 使用 squash merge，标题作为最终提交信息。至少一人评审，CI 必须通过。涉及浏览器行为的改动需写明实测设备和系统版本。
 
 ## 发布
 
-采用 SemVer。`Cargo.toml` 与 `Cargo.lock` 的版本必须一致。合并到 `main` 后，release workflow 会读取包版本；若对应 Release 尚不存在，会在完整测试通过后自动创建，例如 `version = "1.1.0"` 对应 `v1.1.0`。也可显式推送相同 SemVer tag 触发发布。
+采用 SemVer。`Cargo.toml` 与 `Cargo.lock` 的版本必须一致。普通 PR/main push 不会发布 Release。只有在 main 对应提交的 CI 已通过后，显式推送与 Cargo 版本一致的 SemVer tag（例如 `v1.1.0`）才会触发 release workflow；workflow 会再次验证 tag、测试 exact tagged source 并构建产物。
 
 `.github/workflows/release.yml` 会发布带 SHA-256 校验的 Linux x86_64 二进制包。CI 产物使用兼容性较好的 x86-64-v2；在生产服务器运行构建脚本可获得 `target-cpu=native` 的最佳性能。紧急回滚使用上一版本二进制，不重写已发布 tag。
 

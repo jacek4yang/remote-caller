@@ -2013,8 +2013,6 @@ dependencies = [
 [[package]]
 name = "turn-server"
 version = "4.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "237bf5f3fc277e43d95423d4f34a6ddf9e3a730450c290397a708eec3ddaf98b"
 dependencies = [
  "ahash",
  "anyhow",

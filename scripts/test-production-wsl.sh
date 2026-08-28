@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-WORKSPACE=${WORKSPACE:-/mnt/c/Users/20220/Documents/remote-caller}
+WORKSPACE=${WORKSPACE:-$(pwd)}
 TARGET_DIR=${CARGO_TARGET_DIR:-$WORKSPACE/target-wsl}
 BIN=${REMOTE_CALLER_BIN:-$TARGET_DIR/x86_64-unknown-linux-gnu/release/remote-caller}
 LOG_DIR=/tmp/remote-caller-e2e
@@ -66,10 +66,7 @@ cat > /etc/remote-caller/remote-caller.env <<EOF
 BIND_ADDR=127.0.0.1:8080
 SERVE_STATIC=false
 JWT_SECRET=integration-jwt-secret-at-least-32-characters
-ADMIN_USERNAME=admin
-ADMIN_DISPLAY_NAME=IntegrationAdmin
-ADMIN_PASSWORD_HASH='$HASH'
-USERS_JSON='[]'
+AUTH_USERS_JSON='[{"username":"integration-one","displayName":"Integration One","passwordHash":"$HASH","role":"user"},{"username":"integration-two","displayName":"Integration Two","passwordHash":"$HASH","role":"user"}]'
 SESSION_TTL_SECS=604800
 AUTH_MAX_CONCURRENT_HASHES=2
 MAX_WS_CONNECTIONS=16
@@ -86,6 +83,7 @@ TURN_PORT=3478
 TURN_TLS_PORT=5349
 TURN_RELAY_MIN_PORT=49160
 TURN_RELAY_MAX_PORT=49175
+TURN_MAX_SESSIONS=64
 TURN_TLS_CERT=/etc/remote-caller/tls/fullchain.pem
 TURN_TLS_KEY=/etc/remote-caller/tls/privkey.pem
 STUN_URL=stun:$DOMAIN:3478
@@ -104,7 +102,7 @@ systemctl daemon-reload
 systemctl enable --now remote-caller
 systemctl restart nginx
 
-for _ in $(seq 1 50); do
+for _ in $(seq 1 100); do
   curl -fsS http://127.0.0.1:8080/health/ready >"$LOG_DIR/health.json" 2>/dev/null && break
   sleep .1
 done
@@ -130,13 +128,13 @@ test "$(curl -s -o /dev/null -w '%{http_code}' --resolve "$DOMAIN:80:127.0.0.1" 
 
 LOGIN_JSON=$(curl -sk --resolve "$DOMAIN:443:127.0.0.1" \
   -H 'Content-Type: application/json' \
-  -d "{\"username\":\"admin\",\"password\":\"$PASSWORD\"}" \
+  -d "{\"username\":\"integration-one\",\"password\":\"$PASSWORD\"}" \
   "https://$DOMAIN/api/login")
 printf '%s' "$LOGIN_JSON" >"$LOG_DIR/login.json"
 TOKEN=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])' <<<"$LOGIN_JSON")
 test -n "$TOKEN"
 test "$(curl -sk -o /dev/null -w '%{http_code}' --resolve "$DOMAIN:443:127.0.0.1" \
-  -H 'Content-Type: application/json' -d '{"username":"admin","password":"wrong-password"}' \
+  -H 'Content-Type: application/json' -d '{"username":"integration-one","password":"wrong-password"}' \
   "https://$DOMAIN/api/login")" = 401
 
 curl -sk --resolve "$DOMAIN:443:127.0.0.1" -H "Authorization: Bearer $TOKEN" \
@@ -225,6 +223,11 @@ assert_contains "$LOG_DIR/turn-udp.log" 'Total lost packets 0'
 timeout 20 turnutils_uclient -t -L 127.0.0.1 -u "$TURN_USERNAME" -w "$TURN_PASSWORD" -y -c -n 20 \
   127.0.0.1 >"$LOG_DIR/turn-tcp.log" 2>&1
 assert_contains "$LOG_DIR/turn-tcp.log" 'Total lost packets 0'
+if timeout 8 turnutils_uclient -L 127.0.0.1 -u "$TURN_USERNAME" -w 'invalid-turn-password' -y -c -n 1 \
+  127.0.0.1 >"$LOG_DIR/turn-invalid-password.log" 2>&1; then
+  echo 'ASSERTION FAILED: TURN accepted an invalid password' >&2
+  exit 1
+fi
 
 # Short concurrent baseline through the real HTTPS/Nginx/Rust path. The raw
 # result is retained because WSL numbers are host-specific, not a production SLA.
@@ -236,8 +239,10 @@ awk '/Requests\/sec:/ { if ($2 + 0 <= 0) exit 1; found=1 } END { if (!found) exi
 
 # systemd recovery and post-restart readiness.
 OLD_PID=$(systemctl show -p MainPID --value remote-caller)
-systemctl restart remote-caller
-for _ in $(seq 1 50); do
+timeout 10 systemctl stop remote-caller
+! systemctl is-active --quiet remote-caller
+systemctl start remote-caller
+for _ in $(seq 1 100); do
   curl -fsS http://127.0.0.1:8080/health/ready >/dev/null 2>&1 && break
   sleep .1
 done

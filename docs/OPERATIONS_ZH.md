@@ -8,24 +8,25 @@
 - `remote_caller_active_rooms`：当前 room 数；
 - `remote_caller_total_connections`：累计 WebSocket；
 - `remote_caller_signaling_messages`：累计有效信令消息；
+- `remote_caller_rejected_signaling_messages`：累计因 JSON、类型、大小或速率不合格而拒绝的信令消息；
 - `remote_caller_rejected_connections`：因 room 满、全局/账号容量等被拒绝的连接；
 - `remote_caller_rejected_logins`：失败或受限登录；
 - `remote_caller_issued_ws_tickets`：累计签发的一次性 WebSocket ticket。
 
 生产 Nginx 默认只允许 localhost 读取 `/metrics`。
 
-建议监控：systemd 服务状态、`/health/ready`、3478/5349 监听、TURN relay UDP 端口、服务器 NIC 入/出带宽、内存以及真实客户端 selected ICE candidate 类型。
+建议监控：systemd 服务状态、`/health/ready`、3478/5349 listener、服务器 NIC 入/出带宽、内存以及真实客户端 selected ICE candidate 类型。49160–49175 是进程内虚拟 allocation ID，不会出现在 `ss` 中。
 
 ## 私人双人容量
 
 业务 HTTP/WS 流量很小。P2P 时服务器基本不承载媒体；使用 TURN relay 时，服务器同时接收并发送媒体，因此公网带宽才是主要瓶颈。
 
-默认只给 16 个 relay UDP 端口，并对应用状态设置很低的有界上限。这些是防滥用边界，不是公共会议容量参数。
+默认只给 16 个虚拟 relay ID、64 个 TURN session/transport，并对应用状态设置很低的有界上限。未认证 TURN challenge 30 秒过期，allocation/refresh 最长 1 小时。这些是防滥用边界，不是公共会议容量参数。
 
 ## 长通话预期
 
 - JWT 默认 7 天；已经建立的 WebSocket/媒体不会因为 JWT 到达 `exp` 就被服务器主动切断。
-- WebSocket 每 20 秒 Ping，Nginx read/send timeout 为 24 小时；只要页面和网络正常，数小时通话不依赖“空闲连接永不过期”。
+- WebSocket 每 20 秒 Ping，Nginx read/send timeout 为 75 秒；只要页面和网络正常，应用心跳会持续刷新计时器，数小时通话不依赖“空闲连接永不过期”。
 - Wi-Fi/蜂窝切换后客户端会尝试 ICE restart，多次失败再重建 PeerConnection。
 - 手机系统把 Safari/Chrome/PWA 挂起或杀死时，Web 应用无法强制在后台继续运行；回到前台后会尝试恢复。
 
@@ -34,7 +35,7 @@
 | 现象 | 首要检查 | 处理 |
 |---|---|---|
 | 手机无法申请摄像头 | 是否可信 HTTPS | 修复证书，不使用公网/局域网裸 HTTP |
-| 双方进入但无媒体 | selected ICE candidate / TURN 端口 | 检查 3478 UDP/TCP、5349 TCP、relay UDP、防火墙和 `TURN_PUBLIC_IP` |
+| 双方进入但无媒体 | selected ICE candidate / TURN listener | 检查 3478 UDP/TCP、5349 TCP、防火墙、`TURN_PUBLIC_IP`，并确认双方从同一实例取得 relay candidate |
 | 长时间后信令断开 | Nginx 配置、页面是否被系统挂起 | 确认部署的是仓库 v1.0.0 Nginx 配置；前台页面应自动 ticket 重连 |
 | Wi-Fi 切换 5G 后无媒体 | ICE restart 是否成功 | 等待自动恢复；持续失败时重新进入房间并查看浏览器 console / journal |
 | 一直“等待对方” | `/api/ws-ticket` 与 `/ws` 是否成功 | 检查 Nginx、JWT 是否过期、系统日志；JWT 不再放在 WS URL 中 |
@@ -53,7 +54,7 @@
 4. 更新 `/etc/remote-caller/remote-caller.env`；
 5. `systemctl restart remote-caller`。
 
-`TURN_SECRET` 变化后静态 TURN credential table 会重新派生，旧凭证立即无法用于新认证。已经存在的 TURN allocation 可能持续到自身生命周期结束，因此严重泄露时可同时临时收紧防火墙或重启实例。
+`TURN_SECRET` 变化并重启后，静态 TURN credential table 会重新派生，旧 allocation 随进程退出而释放，旧凭证无法用于新认证。严重泄露时，在完成密码与 secret 轮换前可先临时关闭公网 TURN 端口。
 
 ## 日志与隐私
 
@@ -76,7 +77,7 @@ Rust tracing 只记录 HTTP path，不记录 query。Nginx 对 `/ws` 关闭 acce
 更新前：
 
 ```bash
-sha256sum -c remote-caller-linux-x86_64.tar.gz.sha256 2>/dev/null || true
+sha256sum -c SHA256SUMS
 sudo cp /opt/remote-caller/bin/remote-caller /opt/remote-caller/bin/remote-caller.previous
 ```
 

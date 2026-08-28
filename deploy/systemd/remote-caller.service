@@ -14,7 +14,7 @@ Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=35s
 KillSignal=SIGTERM
-LimitNOFILE=100000
+LimitNOFILE=4096
 UMask=0077
 
 NoNewPrivileges=true
@@ -27,6 +27,7 @@ ProtectKernelModules=true
 ProtectKernelLogs=true
 ProtectControlGroups=true
 ProtectClock=true
+ProtectHostname=true
 ProtectProc=invisible
 ProcSubset=pid
 RestrictSUIDSGID=true
@@ -34,6 +35,8 @@ RestrictRealtime=true
 RestrictNamespaces=true
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 LockPersonality=true
+SystemCallArchitectures=native
+KeyringMode=private
 CapabilityBoundingSet=
 AmbientCapabilities=
 

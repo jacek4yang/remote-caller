@@ -1,8 +1,10 @@
 use std::{
+    collections::HashSet,
     env,
     net::{IpAddr, SocketAddr},
 };
 
+use argon2::PasswordHash;
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -44,6 +46,7 @@ pub struct Config {
     pub turn_tls_port: u16,
     pub turn_relay_min_port: u16,
     pub turn_relay_max_port: u16,
+    pub turn_max_sessions: usize,
     pub turn_tls_cert: Option<String>,
     pub turn_tls_key: Option<String>,
 }
@@ -55,25 +58,20 @@ impl Config {
             .unwrap_or_else(|_| "127.0.0.1:8080".into())
             .parse()
             .map_err(|e| format!("invalid BIND_ADDR: {e}"))?;
-        let jwt_secret = env::var("JWT_SECRET").map_err(|_| "JWT_SECRET is required".to_string())?;
-        if jwt_secret.len() < 32 {
-            return Err("JWT_SECRET must contain at least 32 characters".into());
+        if !bind_addr.ip().is_loopback() {
+            return Err("BIND_ADDR must be a loopback address; expose the service through Nginx".into());
         }
+        let jwt_secret = env::var("JWT_SECRET").map_err(|_| "JWT_SECRET is required".to_string())?;
+        validate_secret("JWT_SECRET", &jwt_secret)?;
 
-        let admin_password_hash = env::var("ADMIN_PASSWORD_HASH").map_err(|_| {
-            "ADMIN_PASSWORD_HASH is required; run `remote-caller hash-password` to create it".to_string()
+        let users_json = env::var("AUTH_USERS_JSON").map_err(|_| {
+            "AUTH_USERS_JSON is required; configure one or more explicit users".to_string()
         })?;
-        let mut auth_users = vec![AuthUser {
-            username: env::var("ADMIN_USERNAME").unwrap_or_else(|_| "admin".into()),
-            display_name: env::var("ADMIN_DISPLAY_NAME").unwrap_or_else(|_| "Admin".into()),
-            password_hash: admin_password_hash,
-            role: "admin".into(),
-        }];
-        let extra_users = env::var("USERS_JSON").unwrap_or_else(|_| "[]".into());
-        auth_users.extend(
-            serde_json::from_str::<Vec<AuthUser>>(&extra_users)
-                .map_err(|error| format!("invalid USERS_JSON: {error}"))?,
-        );
+        let auth_users = serde_json::from_str::<Vec<AuthUser>>(&users_json)
+            .map_err(|error| format!("invalid AUTH_USERS_JSON: {error}"))?;
+        if auth_users.is_empty() {
+            return Err("AUTH_USERS_JSON must configure at least one user".into());
+        }
         validate_users(&auth_users)?;
         if auth_users.len() > 8 {
             return Err("this personal deployment build supports at most 8 configured users".into());
@@ -84,8 +82,14 @@ impl Config {
             return Err("EMBEDDED_TURN is supported only by the Linux binary".into());
         }
         let turn_secret = env::var("TURN_SECRET").ok().filter(|secret| !secret.is_empty());
-        if embedded_turn && turn_secret.as_ref().is_none_or(|secret| secret.len() < 32) {
-            return Err("TURN_SECRET must contain at least 32 characters when EMBEDDED_TURN=true".into());
+        if embedded_turn {
+            let secret = turn_secret
+                .as_deref()
+                .ok_or_else(|| "TURN_SECRET is required when EMBEDDED_TURN=true".to_string())?;
+            validate_secret("TURN_SECRET", secret)?;
+            if secret == jwt_secret {
+                return Err("TURN_SECRET must be different from JWT_SECRET".into());
+            }
         }
         let turn_public_ip = env::var("TURN_PUBLIC_IP")
             .ok()
@@ -99,6 +103,13 @@ impl Config {
             return Err("TURN_PUBLIC_IP is required when EMBEDDED_TURN=true".into());
         }
         let turn_realm = env::var("TURN_REALM").unwrap_or_else(|_| "localhost".into());
+        if turn_realm.is_empty()
+            || turn_realm.len() > 253
+            || turn_realm.chars().any(char::is_control)
+            || turn_realm.chars().any(char::is_whitespace)
+        {
+            return Err("TURN_REALM must be a non-empty hostname-like value".into());
+        }
         let turn_tls_cert = env::var("TURN_TLS_CERT").ok().filter(|value| !value.is_empty());
         let turn_tls_key = env::var("TURN_TLS_KEY").ok().filter(|value| !value.is_empty());
         if turn_tls_cert.is_some() != turn_tls_key.is_some() {
@@ -111,8 +122,14 @@ impl Config {
         if turn_relay_min_port < 49_152 || turn_relay_min_port > turn_relay_max_port {
             return Err("TURN relay port range must be ordered and start at or above 49152".into());
         }
-        if u32::from(turn_relay_max_port) - u32::from(turn_relay_min_port) + 1 > 128 {
+        let turn_relay_ports =
+            u32::from(turn_relay_max_port) - u32::from(turn_relay_min_port) + 1;
+        if turn_relay_ports > 128 {
             return Err("TURN relay port range must contain at most 128 ports for this personal build".into());
+        }
+        let turn_max_sessions = read_usize("TURN_MAX_SESSIONS", 64)?;
+        if turn_max_sessions < turn_relay_ports as usize || turn_max_sessions > 4_096 {
+            return Err("TURN_MAX_SESSIONS must cover the relay range and be at most 4096".into());
         }
         let default_turn_urls = || {
             let mut urls = vec![
@@ -137,6 +154,15 @@ impl Config {
             || max_pending_ws_tickets == 0
         {
             return Err("resource limits must be greater than zero".into());
+        }
+        if max_ws_connections > 128
+            || max_ws_per_user > 8
+            || max_rooms > 64
+            || auth_max_concurrent_hashes > 8
+            || max_pending_ws_tickets > 1_024
+            || max_ws_per_user > max_ws_connections
+        {
+            return Err("resource limits exceed the supported personal-service bounds".into());
         }
         let session_ttl_secs = read_u64("SESSION_TTL_SECS", 604_800)?;
         if !(3_600..=2_592_000).contains(&session_ttl_secs) {
@@ -168,7 +194,8 @@ impl Config {
                 .map(ToOwned::to_owned)
                 .collect(),
             turn_secret,
-            public_stun_url: env::var("STUN_URL").unwrap_or_else(|_| "stun:stun.l.google.com:19302".into()),
+            public_stun_url: env::var("STUN_URL")
+                .unwrap_or_else(|_| format!("stun:{turn_realm}:{turn_port}")),
             static_dir: env::var("STATIC_DIR").unwrap_or_else(|_| "web".into()),
             serve_static: read_bool("SERVE_STATIC", true)?,
             auth_users,
@@ -183,6 +210,7 @@ impl Config {
             turn_tls_port,
             turn_relay_min_port,
             turn_relay_max_port,
+            turn_max_sessions,
             turn_tls_cert,
             turn_tls_key,
         })
@@ -214,6 +242,7 @@ impl Config {
             turn_tls_port: 5349,
             turn_relay_min_port: 49160,
             turn_relay_max_port: 49175,
+            turn_max_sessions: 64,
             turn_tls_cert: None,
             turn_tls_key: None,
         }
@@ -231,10 +260,15 @@ fn validate_users(users: &[AuthUser]) -> Result<(), String> {
         {
             return Err(format!("invalid username at auth user index {index}"));
         }
-        if user.display_name.trim().is_empty() || user.display_name.chars().count() > 40 {
+        if user.display_name.trim().is_empty()
+            || user.display_name.chars().count() > 40
+            || user.display_name.chars().any(char::is_control)
+        {
             return Err(format!("invalid displayName at auth user index {index}"));
         }
-        if !user.password_hash.starts_with("$argon2id$") {
+        if !user.password_hash.starts_with("$argon2id$")
+            || PasswordHash::new(&user.password_hash).is_err()
+        {
             return Err(format!(
                 "passwordHash at auth user index {index} must be an Argon2id PHC string"
             ));
@@ -245,6 +279,16 @@ fn validate_users(users: &[AuthUser]) -> Result<(), String> {
         if users[..index].iter().any(|existing| existing.username == user.username) {
             return Err(format!("duplicate username: {}", user.username));
         }
+    }
+    Ok(())
+}
+
+fn validate_secret(name: &str, secret: &str) -> Result<(), String> {
+    let unique = secret.bytes().collect::<HashSet<_>>().len();
+    if secret.len() < 32 || secret.len() > 1_024 || unique < 8 || secret.contains("REPLACE_WITH") {
+        return Err(format!(
+            "{name} must be a 32-1024 byte high-entropy value with at least 8 distinct bytes"
+        ));
     }
     Ok(())
 }

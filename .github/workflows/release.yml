@@ -1,79 +1,74 @@
-name: Release Linux x86_64 binary
+name: Release Linux x86_64
 
 on:
   push:
-    branches: [main]
     tags: ['v*.*.*']
-  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  linux-binary:
+  linux-x86-64:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Resolve release tag
-        id: version
-        env:
-          GH_TOKEN: ${{ github.token }}
+          persist-credentials: false
+      - name: Verify tag and package version
+        shell: bash
         run: |
-          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-          else
-            VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
-            TAG="v$VERSION"
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: dtolnay/rust-toolchain@stable
-        if: steps.version.outputs.skip != 'true'
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+          test "$GITHUB_REF_NAME" = "v$version"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git fetch --no-tags origin main
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
-        if: steps.version.outputs.skip != 'true'
-      - name: Test
-        if: steps.version.outputs.skip != 'true'
+      - uses: Swatinem/rust-cache@bc2d2e71bd35c5549942babaa51a89c586b981d1 # v2.8.1
+      - name: Test exact tagged source
         run: |
           cargo fmt --all -- --check
+          cargo fmt --manifest-path vendor/turn-server/Cargo.toml --all -- --check
           cargo clippy --locked --all-targets --all-features -- -D warnings
           cargo test --locked --all-features
           node --check web/app.js
           node --check web/sw.js
-      - name: Build portable x86_64-v2 binary
-        if: steps.version.outputs.skip != 'true'
+          bash -n scripts/build-release.sh
+          bash -n scripts/test-production-wsl.sh
+      - name: Build tagged binary
         env:
           RUSTFLAGS: -C target-cpu=x86-64-v2
         run: cargo build --locked --release --target x86_64-unknown-linux-gnu
       - name: Package release
-        if: steps.version.outputs.skip != 'true'
+        shell: bash
         run: |
-          mkdir -p dist/bin dist/web dist/deploy/nginx dist/deploy/systemd dist/docs dist/scripts
-          cp target/x86_64-unknown-linux-gnu/release/remote-caller dist/bin/
-          cp -R web/. dist/web/
-          cp deploy/nginx/remote-caller.conf dist/deploy/nginx/
-          cp deploy/nginx/bootstrap.conf dist/deploy/nginx/
-          cp deploy/systemd/remote-caller.service deploy/systemd/remote-caller.env.example dist/deploy/systemd/
-          cp docs/*.md dist/docs/
-          cp scripts/test-production-wsl.sh dist/scripts/
-          cp README.md LICENSE dist/
-          tar -C dist -czf remote-caller-linux-x86_64.tar.gz .
-          sha256sum remote-caller-linux-x86_64.tar.gz > remote-caller-linux-x86_64.tar.gz.sha256
+          archive="remote-caller-${GITHUB_REF_NAME}-linux-x86_64.tar.gz"
+          root="remote-caller-${GITHUB_REF_NAME}-linux-x86_64"
+          mkdir -p "dist/$root/bin" "dist/$root/web" "dist/$root/deploy/nginx" \
+            "dist/$root/deploy/systemd" "dist/$root/docs" "dist/$root/scripts"
+          install -m 0755 target/x86_64-unknown-linux-gnu/release/remote-caller "dist/$root/bin/remote-caller"
+          cp -R web/. "dist/$root/web/"
+          cp deploy/nginx/*.conf "dist/$root/deploy/nginx/"
+          cp deploy/systemd/remote-caller.service deploy/systemd/remote-caller.env.example "dist/$root/deploy/systemd/"
+          cp docs/*.md "dist/$root/docs/"
+          install -m 0755 scripts/test-production-wsl.sh "dist/$root/scripts/test-production-wsl.sh"
+          cp .env.example README.md CONTRIBUTING.md LICENSE "dist/$root/"
+          tar -C dist -czf "$archive" "$root"
+          sha256sum "$archive" > SHA256SUMS
+          tar -tzf "$archive" | grep -q "^$root/bin/remote-caller$"
+          test -s "$archive"
       - name: Publish GitHub Release
-        if: steps.version.outputs.skip != 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@5be0e66d93ac7ed76da52eca8bb058f665c3a5fe # v2.4.2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
           make_latest: true
+          fail_on_unmatched_files: true
           files: |
-            remote-caller-linux-x86_64.tar.gz
-            remote-caller-linux-x86_64.tar.gz.sha256
+            remote-caller-${{ github.ref_name }}-linux-x86_64.tar.gz
+            SHA256SUMS

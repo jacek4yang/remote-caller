@@ -1,122 +1,245 @@
 # Remote Caller
 
-Remote Caller 是一个面向**固定少量白名单用户**的自托管双人 WebRTC 语音/视频通话服务。生产形态只需要 Nginx 和一个 Rust 二进制：Rust 进程负责账号鉴权、WebSocket 信令、内嵌 STUN/TURN 与资源限制；媒体优先 P2P，复杂 NAT 下自动使用同一 Rust 进程中继。
+Remote Caller is a small, self-hosted WebRTC audio/video calling service for a fixed allowlist of trusted users. A production instance runs Nginx and one Rust process: Nginx serves the browser application and terminates HTTPS, while Rust provides authentication, WebSocket signaling, room management, STUN, and TURN.
 
-v1.0.0 的目标不是公共会议 SaaS，而是让两名固定用户长期、稳定地在 Android、iOS 和桌面浏览器之间通话，同时把公网攻击面压到很小。
+Version 1.0.0 is intentionally designed for a private two-person deployment. It is not a public registration service, conference platform, SFU, or general-purpose TURN server.
 
-## v1.0.0 设计重点
-
-- **无开放注册**：只有环境文件中预先配置的账号可以登录。
-- **Argon2id 密码**：服务端只保存 PHC 哈希；未知用户名也执行一次 Argon2 校验，降低用户名时序枚举。
-- **有界登录成本**：默认最多同时执行 2 个 Argon2 校验，防止登录接口形成无限 `spawn_blocking` 队列。
-- **JWT 不进入 WebSocket URL**：浏览器先用 Bearer JWT 换取 30 秒、一次性的 WebSocket ticket，再建立 `/ws?ticket=...`。
-- **资源上限**：默认全局最多 16 个 WebSocket、每账号 3 个、8 个房间、32 个待使用 ticket；每房间仍严格最多 2 人。
-- **纯 Rust TURN 数据面**：继续使用现有 `turn-server` crate，不引入 Coturn、Redis、数据库或额外守护进程。
-- **TURN 只允许配置账号**：v1.0.0 不再使用无法由当前内嵌 TURN 真正强制过期的 REST 时间戳用户名，而是把每个白名单账号的高熵 TURN 凭证直接加入内嵌 TURN 静态凭证表。轮换 `TURN_SECRET` 并重启即可使所有旧 TURN 凭证失效。
-- **长通话恢复**：WebSocket 每 20 秒应用层 Ping；Nginx WebSocket 超时为 24 小时；前端串行处理 SDP/ICE、缓存提前到达的 ICE candidate，并在网络切换后自动 ICE restart / 重建 PeerConnection。
-- **安全默认监听**：HTTP 默认只监听 `127.0.0.1:8080`，公网入口应只有 Nginx 443 和 TURN 所需端口。
-
-> 安全边界：TURN 凭证在 `TURN_SECRET` 轮换前是稳定凭证，不是时间到期凭证。这是为了在不引入外部 TURN 服务的前提下避免“看似有 TTL、服务端却不验证 TTL”的错误安全模型。对于只有固定两名可信用户的私人实例，这是明确且可控的取舍。若怀疑浏览器、账号或凭证泄露，应立即轮换 `TURN_SECRET`、`JWT_SECRET` 和对应账号密码。
-
-## 本地开发
-
-需要 Rust 1.85+。桌面浏览器访问 `localhost` 可测试摄像头/麦克风；真实手机和跨网络测试必须使用可信 HTTPS。
-
-```powershell
-$env:JWT_SECRET="development-jwt-secret-at-least-32-chars"
-$hash = "一个至少十个字符的密码" | cargo run -- hash-password
-$env:ADMIN_PASSWORD_HASH=$hash
-$env:EMBEDDED_TURN="false"
-cargo run
-```
-
-打开 `http://localhost:8080`。如果要测试两名独立账号，通过 `USERS_JSON` 再添加一个白名单用户。
-
-## 生产拓扑
+## Architecture
 
 ```text
-Internet
-   |
-   +-- 80/443 ----------> Nginx ----------> 127.0.0.1:8080 Rust HTTP/WS
-   |
-   +-- 3478 UDP/TCP ----------------------> Rust STUN/TURN
-   +-- 5349 TCP (TLS) --------------------> Rust TURNS
-   +-- 49160-49175 UDP -------------------> Rust TURN relay
+Browser A  <------------- WebRTC media ------------->  Browser B
+    |                         |                             |
+    | HTTPS / WSS             +-- embedded TURN fallback --+
+    v
+  Nginx  ---- HTTP / WS ---->  127.0.0.1:8080 Rust service
 ```
 
-生产服务器不需要 Docker、Coturn、Redis 或数据库。详见 [`docs/DEPLOYMENT_ZH.md`](docs/DEPLOYMENT_ZH.md)。
+Media is peer-to-peer whenever ICE can find a direct path. Both browsers use the embedded Rust TURN service when a restrictive network prevents direct connectivity. No database, Redis, Coturn, Docker, Kubernetes, Node.js backend, or external identity service is required.
 
-## 核心配置
+## Features
 
-| 环境变量 | 默认值 | 说明 |
-|---|---:|---|
-| `BIND_ADDR` | `127.0.0.1:8080` | HTTP/WS 监听地址；生产保持回环地址 |
-| `JWT_SECRET` | 必填 | JWT HMAC 密钥，至少 32 字符 |
-| `ADMIN_USERNAME` | `admin` | 第一个白名单账号；生产建议改成不可猜的真实用户名 |
-| `ADMIN_DISPLAY_NAME` | `Admin` | 显示名称 |
-| `ADMIN_PASSWORD_HASH` | 必填 | `remote-caller hash-password` 生成的 Argon2id PHC 哈希 |
-| `USERS_JSON` | `[]` | 额外白名单账号；私人双人部署添加第二个账号即可 |
-| `SESSION_TTL_SECS` | `604800` | JWT 会话 7 天；允许范围 1 小时到 30 天 |
-| `AUTH_MAX_CONCURRENT_HASHES` | `2` | 全局同时执行的 Argon2 校验上限 |
-| `MAX_WS_CONNECTIONS` | `16` | 全局 WebSocket 上限 |
-| `MAX_WS_PER_USER` | `3` | 单账号 WebSocket 上限 |
-| `MAX_ROOMS` | `8` | 同时存在的房间上限 |
-| `WS_TICKET_TTL_SECS` | `30` | 一次性 WebSocket ticket 有效期，10-300 秒 |
-| `MAX_PENDING_WS_TICKETS` | `32` | 尚未消费的一次性 ticket 上限 |
-| `EMBEDDED_TURN` | Linux 为 `true` | 启动同进程 Rust STUN/TURN |
-| `TURN_SECRET` | 内嵌 TURN 时必填 | 至少 32 字符；派生每账号的 TURN 高熵凭证 |
-| `TURN_PUBLIC_IP` | 内嵌 TURN 时必填 | 服务器公网 IPv4 |
-| `TURN_REALM` | `localhost` | 生产设置为通话域名 |
-| `TURN_URLS` | 自动生成 | `turn:` / `turns:` 地址列表 |
-| `TURN_RELAY_MIN_PORT` | `49160` | TURN 中继端口起点 |
-| `TURN_RELAY_MAX_PORT` | `49175` | TURN 中继端口终点 |
-| `STATIC_DIR` | `web` | 静态前端目录 |
-| `SERVE_STATIC` | `true` | 生产由 Nginx 托管静态资源时设为 `false` |
+- Explicit server-side account allowlist; no registration endpoint.
+- Argon2id password hashes and bounded password-verification concurrency.
+- HS256 JWTs with required issuer, audience, issued-at, and expiry claims.
+- Short-lived, single-use WebSocket tickets, so JWTs never appear in WebSocket URLs.
+- Two distinct accounts per room, with atomic same-account reconnect replacement.
+- Hard limits for rooms, tickets, WebSockets, signaling rate, message size, and TURN sessions.
+- Serialized SDP/ICE processing, queued candidates, Perfect Negotiation glare handling, and stale-candidate filtering.
+- WebSocket health detection and bounded reconnect/ICE-restart recovery.
+- Embedded Rust STUN/TURN over UDP, TCP, and optional TLS.
+- Liveness, readiness, and lightweight Prometheus-text metrics endpoints.
+- Hardened Nginx and systemd examples.
+- Tag-only, reproducible GitHub Release workflow with SHA-256 checksums.
 
-## HTTP / WebSocket 接口
+## Security model
 
-- `POST /api/login`：白名单账号登录，返回内存中使用的 JWT。
-- `GET /api/config`：Bearer JWT 获取 ICE 配置和当前账号的 TURN 凭证。
-- `POST /api/ws-ticket`：Bearer JWT + 房间号换取短时一次性 ticket。
-- `GET /ws?ticket=...`：消费 ticket 后升级 WebSocket；ticket 使用一次立即删除。
-- `GET /health/live`、`GET /health/ready`：健康探针。
-- `GET /metrics`：Prometheus 文本指标；生产 Nginx 默认仅允许 localhost。
+The source repository is public; a deployed service remains private because only accounts in `AUTH_USERS_JSON` can authenticate. Passwords are never stored in plaintext. Unknown usernames still perform an Argon2 verification, and the global Argon2 semaphore prevents an unbounded blocking-work queue.
 
-## GitHub Actions / Release
+The browser keeps its JWT in page memory. It exchanges the JWT for a random ticket that expires after 30 seconds and is consumed exactly once during WebSocket upgrade. Nginx disables access logging for `/ws` even though its query string contains only that ticket.
 
-`main` 的 CI 会执行：
+TURN credentials are not login passwords. At startup, the service derives one high-entropy credential per configured account from `TURN_SECRET` and installs only those credentials in the embedded TURN server. They remain valid until `TURN_SECRET` is rotated and the process is restarted. This is deliberate: `turn-server` 4.1.4 validates TURN REST HMACs but does not enforce the timestamp embedded in REST usernames, so Remote Caller does not claim a false credential TTL.
 
-```text
-cargo fmt --check
+The exact vendored dependency is minimally patched to cap unauthenticated and authenticated session state, shorten unauthenticated challenges, and cap allocation lifetime at one hour. See [`vendor/turn-server/PATCHES.md`](vendor/turn-server/PATCHES.md).
+
+Keep these values outside Git:
+
+- `JWT_SECRET` and `TURN_SECRET`;
+- Argon2id password hashes used by a real deployment;
+- TLS private keys;
+- SSH and deployment credentials.
+
+If a browser or credential may be compromised, change the affected password hash, rotate both application secrets, and restart the service.
+
+## Requirements
+
+For a source build:
+
+- Linux x86_64;
+- Rust 1.85 or later (edition 2024 support);
+- a C toolchain, CMake, and `pkg-config` for AWS-LC;
+- Node.js only for the optional JavaScript syntax check.
+
+For the published Linux artifact, Rust and build tools are not required. Production additionally needs Nginx, systemd, a DNS name, and a browser-trusted TLS certificate.
+
+## Build and local development
+
+Generate two development hashes without putting plaintext passwords in a file:
+
+```bash
+read -rsp 'Caller one password: ' PASSWORD_ONE; echo
+HASH_ONE=$(printf '%s' "$PASSWORD_ONE" | cargo run --quiet -- hash-password)
+unset PASSWORD_ONE
+read -rsp 'Caller two password: ' PASSWORD_TWO; echo
+HASH_TWO=$(printf '%s' "$PASSWORD_TWO" | cargo run --quiet -- hash-password)
+unset PASSWORD_TWO
+```
+
+Copy [`.env.example`](.env.example), replace every placeholder, and load it using a mechanism appropriate to your shell. The application does not parse `.env` files itself. For local browser testing, set `EMBEDDED_TURN=false`, `SERVE_STATIC=true`, and keep `BIND_ADDR=127.0.0.1:8080`.
+
+Run the normal checks and start the service:
+
+```bash
+cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features
-cargo build --locked --release
-node --check web/app.js
-node --check web/sw.js
+cargo build --release --locked
+cargo run --locked
 ```
 
-首次把 `Cargo.toml` 的 `version = "1.0.0"` 推到 `main` 时，release workflow 会在测试全部通过后创建 `v1.0.0` Release，并上传：
+Open `http://localhost:8080`. Browsers treat localhost as a secure context, but real phones and cross-network tests require trusted HTTPS.
+
+## Account configuration
+
+`AUTH_USERS_JSON` is required and must contain 1–8 unique accounts. A typical two-account value is:
 
 ```text
-remote-caller-linux-x86_64.tar.gz
-remote-caller-linux-x86_64.tar.gz.sha256
+AUTH_USERS_JSON='[{"username":"caller-one","displayName":"Caller One","passwordHash":"$argon2id$REPLACE_WITH_FIRST_HASH","role":"user"},{"username":"caller-two","displayName":"Caller Two","passwordHash":"$argon2id$REPLACE_WITH_SECOND_HASH","role":"user"}]'
 ```
 
-之后同一版本已经存在 Release 时不会重复发布。新版本先更新 `Cargo.toml`/`Cargo.lock`，再推送 `main` 或显式推送对应 SemVer tag。
+Generate each full `$argon2id$...` value with `remote-caller hash-password`. Usernames accept ASCII letters, digits, `.`, `_`, and `-`; passwords must be 10–256 characters. Use independent passwords for the two accounts.
 
-## 文档
+Generate independent application secrets:
 
-- [生产部署](docs/DEPLOYMENT_ZH.md)
-- [架构与安全边界](docs/ARCHITECTURE_ZH.md)
-- [运维与故障处理](docs/OPERATIONS_ZH.md)
-- [弱网与性能测试](docs/PERFORMANCE_TEST_ZH.md)
-- [编解码与质量策略](docs/ALGORITHM_ZH.md)
-- [iOS / Android 使用指南](docs/USER_GUIDE_ZH.md)
-- [贡献与发布流程](CONTRIBUTING.md)
+```bash
+openssl rand -base64 48
+openssl rand -base64 48
+```
 
-## 平台限制
+Each secret must contain at least 32 bytes and must not be reused for the other purpose.
 
-浏览器可以支持数小时的前台通话和网络切换恢复，但**无法保证 iOS/Android 锁屏后无限期保持 WebRTC 采集与网络活动**。这是移动操作系统对 Web/PWA 后台执行的限制，不是服务端心跳能够绕过的。如果目标升级为系统电话级锁屏通话、来电推送和 CallKit/ConnectionService 集成，需要额外开发原生移动客户端。
+## Configuration
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `BIND_ADDR` | `127.0.0.1:8080` | Internal HTTP/WS listener; a non-loopback value is rejected |
+| `JWT_SECRET` | required | High-entropy HS256 key, 32–1024 bytes |
+| `AUTH_USERS_JSON` | required | JSON array of 1–8 configured accounts |
+| `SESSION_TTL_SECS` | `604800` | JWT lifetime; accepted range 3600–2592000 seconds |
+| `AUTH_MAX_CONCURRENT_HASHES` | `2` | Global Argon2 verification budget, maximum 8 |
+| `MAX_WS_CONNECTIONS` | `16` | Global WebSocket limit, maximum 128 |
+| `MAX_WS_PER_USER` | `3` | Per-account WebSocket limit, maximum 8 |
+| `MAX_ROOMS` | `8` | Concurrent room limit, maximum 64 |
+| `WS_TICKET_TTL_SECS` | `30` | One-use ticket lifetime, 10–300 seconds |
+| `MAX_PENDING_WS_TICKETS` | `32` | Pending ticket limit, maximum 1024 |
+| `EMBEDDED_TURN` | `true` on Linux | Start the in-process Rust STUN/TURN service |
+| `TURN_SECRET` | required with TURN | Per-account TURN credential derivation secret |
+| `TURN_PUBLIC_IP` | required with TURN | Public IP advertised in ICE candidates |
+| `TURN_BIND_IP` | `0.0.0.0` | Local TURN listen address |
+| `TURN_REALM` | `localhost` | TURN realm and default TURN host; use the call domain |
+| `TURN_PORT` | `3478` | UDP and TCP STUN/TURN listener |
+| `TURN_TLS_PORT` | `5349` | TURN-over-TLS TCP listener when cert/key are set |
+| `TURN_TLS_CERT` / `TURN_TLS_KEY` | unset | PEM certificate chain and private key; configure together |
+| `TURN_RELAY_MIN_PORT` / `TURN_RELAY_MAX_PORT` | `49160` / `49175` | Inclusive virtual allocation-ID range, at most 128 entries |
+| `TURN_MAX_SESSIONS` | `64` | Hard session-table cap; 16–4096 with the default relay range |
+| `TURN_URLS` | generated | Comma-separated TURN URLs returned to clients |
+| `STUN_URL` | generated | STUN URL returned to clients |
+| `STATIC_DIR` | `web` | Static browser application directory |
+| `SERVE_STATIC` | `true` | Set `false` when Nginx serves `web/` |
+
+The complete production template is [`deploy/systemd/remote-caller.env.example`](deploy/systemd/remote-caller.env.example).
+
+## Production deployment
+
+Use the tag artifact and verify it before extraction:
+
+```bash
+sha256sum -c SHA256SUMS
+tar -xzf remote-caller-v1.0.0-linux-x86_64.tar.gz
+cd remote-caller-v1.0.0-linux-x86_64
+```
+
+The supported layout is:
+
+```text
+/opt/remote-caller/bin/remote-caller
+/var/www/remote-caller/web/
+/etc/remote-caller/remote-caller.env
+/etc/remote-caller/tls/{fullchain.pem,privkey.pem}
+/etc/systemd/system/remote-caller.service
+/etc/nginx/conf.d/remote-caller.conf
+```
+
+Create a dedicated user, install the files, set the environment file to mode `0600`, and keep the Rust HTTP listener on loopback. Obtain a certificate with the bootstrap Nginx configuration before installing the final TLS configuration. Exact commands, certificate renewal, upgrades, and rollback are in [`docs/DEPLOYMENT_ZH.md`](docs/DEPLOYMENT_ZH.md).
+
+Validate before reload/restart:
+
+```bash
+sudo nginx -t
+sudo systemd-analyze verify /etc/systemd/system/remote-caller.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now remote-caller
+curl -fsS http://127.0.0.1:8080/health/ready
+curl -fsS https://call.example.com/health/ready
+```
+
+### Firewall
+
+Open exactly the protocols enabled by the final configuration:
+
+| Public port | Required | Use |
+|---|---|---|
+| TCP 80 | optional after certificate issuance | HTTP-to-HTTPS redirect and ACME HTTP-01 |
+| TCP 443 | yes | HTTPS and WSS |
+| UDP 3478 | yes | STUN/TURN; preferred media fallback |
+| TCP 3478 | yes | TURN over TCP fallback |
+| TCP 5349 | only with `TURN_TLS_CERT` and `TURN_TLS_KEY` | TURN over TLS |
+
+Do **not** expose TCP 8080. In this exact embedded implementation, `49160–49175` are virtual allocation identifiers multiplexed over the configured TURN listeners, not kernel-bound UDP/TCP listeners, so opening that range is neither required nor useful.
+
+This virtual-port design also means relay forwarding is between allocations on the same Remote Caller TURN instance. ICE must select a relay-to-relay pair; the service is not a general RFC 8656 relay to arbitrary Internet peers. That restriction sharply limits abuse but requires real-device and real-network compatibility testing for your browser pair.
+
+## Nginx and systemd
+
+[`deploy/nginx/remote-caller.conf`](deploy/nginx/remote-caller.conf) supplies TLS, HSTS, CSP, no-sniff/frame/referrer/permissions headers, request and connection limits, short API timeouts, 75-second WebSocket proxy timeouts refreshed by application heartbeats, and local-only metrics. Replace every `call.example.com` before use.
+
+[`deploy/systemd/remote-caller.service`](deploy/systemd/remote-caller.service) runs as an unprivileged account with a read-only filesystem, private temporary/device namespaces, restricted address families, no capabilities, bounded file descriptors, and a 35-second stop timeout. The service marks itself unready and closes WebSockets on SIGTERM; dropping the embedded TURN future releases its listeners.
+
+## Health, metrics, and troubleshooting
+
+- `GET /health/live` returns 204 while the HTTP event loop responds.
+- `GET /health/ready` returns 200 only while normal traffic is accepted and embedded TURN has bound successfully; otherwise it returns 503.
+- `GET /metrics` exposes bounded in-process counters and gauges. The Nginx template restricts it to loopback.
+
+Useful checks:
+
+```bash
+sudo systemctl status remote-caller
+sudo journalctl -u remote-caller -n 200 --no-pager
+sudo ss -lntup | grep -E ':(80|443|3478|5349|8080)\b'
+curl -fsS https://call.example.com/health/ready
+```
+
+If direct calls work but TURN fallback does not, verify `TURN_PUBLIC_IP`, DNS, the 3478/5349 firewall rules, and that both clients received ICE configuration from the same instance. If login returns 429, the Argon2 budget or Nginx per-IP limit is protecting the service; wait and inspect logs for scanning. If a room stays full after a reconnect, confirm both clients are on v1.0.0 and inspect the active-connection/room metrics.
+
+## Upgrading and rollback
+
+Verify every new archive, retain the previous binary and web directory, install the new files atomically, then restart Rust and reload Nginx. If readiness fails, restore both previous components and restart. Detailed commands are in the deployment guide.
+
+Tags are immutable release inputs. `.github/workflows/release.yml` publishes only on a SemVer tag, verifies that the tag matches `Cargo.toml`, tests the exact tagged source, builds for Linux x86-64-v2, and uploads:
+
+```text
+remote-caller-v1.0.0-linux-x86_64.tar.gz
+SHA256SUMS
+```
+
+## Mobile and reliability limitations
+
+Remote Caller targets foreground browser/PWA calls lasting hours under normal network conditions. The client retries signaling with jitter, performs negotiated ICE restarts after network failure, and rebuilds the peer connection after bounded retry failure.
+
+This cannot guarantee FaceTime-like background or lock-screen operation. iOS and Android may suspend or terminate Safari, Chrome, or an installed PWA. System call UI, push wake-up, CallKit, and Android ConnectionService require native applications and are outside v1.0.0.
+
+Multi-hour duration, public-NAT behavior, mobile codec performance, camera switching, and Wi-Fi/cellular handoff must be validated on the actual devices and networks. Unit tests and GitHub Actions cannot prove those properties.
+
+## Additional documentation
+
+- [Linux deployment](docs/DEPLOYMENT_ZH.md) (Chinese)
+- [Architecture and security boundaries](docs/ARCHITECTURE_ZH.md) (Chinese)
+- [Operations and incident response](docs/OPERATIONS_ZH.md) (Chinese)
+- [v1.0.0 attacker-oriented security review](docs/SECURITY_REVIEW.md)
+- [Performance and impaired-network test plan](docs/PERFORMANCE_TEST_ZH.md) (Chinese)
+- [Codec and quality strategy](docs/ALGORITHM_ZH.md) (Chinese)
+- [iOS/Android user guide](docs/USER_GUIDE_ZH.md) (Chinese)
+- [Contributing and releases](CONTRIBUTING.md) (Chinese)
 
 ## License
 
