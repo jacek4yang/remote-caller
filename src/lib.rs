@@ -643,14 +643,11 @@ mod tests {
             .await
             .expect("test handshake must write");
         let mut response = [0_u8; 512];
-        let size =
-            tokio::time::timeout(std::time::Duration::from_secs(2), stream.read(&mut response))
-                .await
-                .expect("test handshake must not time out")
-                .expect("test response must read");
-        assert!(
-            String::from_utf8_lossy(&response[..size]).starts_with("HTTP/1.1 401")
-        );
+        let size = tokio::time::timeout(std::time::Duration::from_secs(2), stream.read(&mut response))
+            .await
+            .expect("test handshake must not time out")
+            .expect("test response must read");
+        assert!(String::from_utf8_lossy(&response[..size]).starts_with("HTTP/1.1 401"));
         server.abort();
     }
 
