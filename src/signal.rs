@@ -60,12 +60,7 @@ pub struct ServerEvent {
     pub payload: Option<Value>,
 }
 
-pub async fn handle_socket(
-    mut socket: WebSocket,
-    claims: Claims,
-    state: AppState,
-    mut room_lease: RoomLease,
-) {
+pub async fn handle_socket(mut socket: WebSocket, claims: Claims, state: AppState, mut room_lease: RoomLease) {
     state.metrics.active_connections.fetch_add(1, Ordering::Relaxed);
     state.metrics.total_connections.fetch_add(1, Ordering::Relaxed);
     let room = room_lease.room().clone();
@@ -177,9 +172,7 @@ mod tests {
 
     #[test]
     fn signaling_json_is_strictly_typed() {
-        let valid = serde_json::from_str::<ClientSignal>(
-            r#"{"type":"offer","payload":{"type":"offer","sdp":"v=0"}}"#,
-        );
+        let valid = serde_json::from_str::<ClientSignal>(r#"{"type":"offer","payload":{"type":"offer","sdp":"v=0"}}"#);
         assert!(valid.is_ok());
         assert!(serde_json::from_str::<ClientSignal>("{").is_err());
         assert!(serde_json::from_str::<ClientSignal>(r#"{"type":1}"#).is_err());

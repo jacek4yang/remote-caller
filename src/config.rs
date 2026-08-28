@@ -64,9 +64,8 @@ impl Config {
         let jwt_secret = env::var("JWT_SECRET").map_err(|_| "JWT_SECRET is required".to_string())?;
         validate_secret("JWT_SECRET", &jwt_secret)?;
 
-        let users_json = env::var("AUTH_USERS_JSON").map_err(|_| {
-            "AUTH_USERS_JSON is required; configure one or more explicit users".to_string()
-        })?;
+        let users_json = env::var("AUTH_USERS_JSON")
+            .map_err(|_| "AUTH_USERS_JSON is required; configure one or more explicit users".to_string())?;
         let auth_users = serde_json::from_str::<Vec<AuthUser>>(&users_json)
             .map_err(|error| format!("invalid AUTH_USERS_JSON: {error}"))?;
         if auth_users.is_empty() {
@@ -122,8 +121,7 @@ impl Config {
         if turn_relay_min_port < 49_152 || turn_relay_min_port > turn_relay_max_port {
             return Err("TURN relay port range must be ordered and start at or above 49152".into());
         }
-        let turn_relay_ports =
-            u32::from(turn_relay_max_port) - u32::from(turn_relay_min_port) + 1;
+        let turn_relay_ports = u32::from(turn_relay_max_port) - u32::from(turn_relay_min_port) + 1;
         if turn_relay_ports > 128 {
             return Err("TURN relay port range must contain at most 128 ports for this personal build".into());
         }
@@ -194,8 +192,7 @@ impl Config {
                 .map(ToOwned::to_owned)
                 .collect(),
             turn_secret,
-            public_stun_url: env::var("STUN_URL")
-                .unwrap_or_else(|_| format!("stun:{turn_realm}:{turn_port}")),
+            public_stun_url: env::var("STUN_URL").unwrap_or_else(|_| format!("stun:{turn_realm}:{turn_port}")),
             static_dir: env::var("STATIC_DIR").unwrap_or_else(|_| "web".into()),
             serve_static: read_bool("SERVE_STATIC", true)?,
             auth_users,
@@ -266,9 +263,7 @@ fn validate_users(users: &[AuthUser]) -> Result<(), String> {
         {
             return Err(format!("invalid displayName at auth user index {index}"));
         }
-        if !user.password_hash.starts_with("$argon2id$")
-            || PasswordHash::new(&user.password_hash).is_err()
-        {
+        if !user.password_hash.starts_with("$argon2id$") || PasswordHash::new(&user.password_hash).is_err() {
             return Err(format!(
                 "passwordHash at auth user index {index} must be an Argon2id PHC string"
             ));

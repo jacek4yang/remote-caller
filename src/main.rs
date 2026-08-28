@@ -40,8 +40,7 @@ async fn main() {
         .expect("failed to bind server");
     tracing::info!(%bind_addr, "remote-caller listening");
     let state = AppState::new(config);
-    let http_server = axum::serve(listener, app(state.clone()))
-        .with_graceful_shutdown(shutdown_signal(state.clone()));
+    let http_server = axum::serve(listener, app(state.clone())).with_graceful_shutdown(shutdown_signal(state.clone()));
 
     #[cfg(target_os = "linux")]
     if embedded_turn {

@@ -177,12 +177,12 @@ async fn websocket(
     let room_lease = state
         .try_join_room(&room_id, &claims.user, &room_connection_id)
         .map_err(|error| {
-        state.metrics.rejected_connections.fetch_add(1, Ordering::Relaxed);
-        match error {
-            JoinRoomError::Full => ApiError::RoomFull,
-            JoinRoomError::Capacity => ApiError::Capacity,
-        }
-    })?;
+            state.metrics.rejected_connections.fetch_add(1, Ordering::Relaxed);
+            match error {
+                JoinRoomError::Full => ApiError::RoomFull,
+                JoinRoomError::Capacity => ApiError::Capacity,
+            }
+        })?;
 
     Ok(ws
         .max_message_size(signal::MAX_SIGNAL_MESSAGE_SIZE)
@@ -244,11 +244,7 @@ async fn readiness(State(state): State<AppState>) -> Response {
     if state.is_ready() {
         (StatusCode::OK, Json(json!({"status":"ready"}))).into_response()
     } else {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({"status":"not_ready"})),
-        )
-            .into_response()
+        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"status":"not_ready"}))).into_response()
     }
 }
 
@@ -445,11 +441,7 @@ mod tests {
             Err(ApiError::Unauthorized)
         ));
 
-        let wrong_algorithm = encode_claims(
-            &config,
-            &test_claims("alice", "algorithm"),
-            Algorithm::HS384,
-        );
+        let wrong_algorithm = encode_claims(&config, &test_claims("alice", "algorithm"), Algorithm::HS384);
         assert!(matches!(
             auth::verify_token(&config, &wrong_algorithm),
             Err(ApiError::Unauthorized)
@@ -531,14 +523,18 @@ mod tests {
         let state = AppState::new(config);
         let claims = test_claims("alice", "session");
         let (ticket, _) = state.issue_ws_ticket(claims, "room-123".into()).unwrap();
-        assert!(state
-            .issue_ws_ticket(test_claims("alice", "second"), "room-123".into())
-            .is_none());
+        assert!(
+            state
+                .issue_ws_ticket(test_claims("alice", "second"), "room-123".into())
+                .is_none()
+        );
         assert!(state.consume_ws_ticket(&ticket).is_some());
         assert!(state.consume_ws_ticket(&ticket).is_none());
-        assert!(state
-            .issue_ws_ticket(test_claims("alice", "second"), "room-123".into())
-            .is_some());
+        assert!(
+            state
+                .issue_ws_ticket(test_claims("alice", "second"), "room-123".into())
+                .is_some()
+        );
 
         let mut config = config_with_user();
         config.ws_ticket_ttl_secs = 0;
@@ -554,21 +550,15 @@ mod tests {
         let mut config = config_with_user();
         config.max_rooms = 1;
         let state = AppState::new(config);
-        let mut first = state
-            .try_join_room("room-001", "alice", "session-a")
-            .unwrap();
+        let mut first = state.try_join_room("room-001", "alice", "session-a").unwrap();
         let cancelled = first.take_cancelled();
-        let replacement = state
-            .try_join_room("room-001", "alice", "session-a2")
-            .unwrap();
+        let replacement = state.try_join_room("room-001", "alice", "session-a2").unwrap();
         assert!(cancelled.await.is_ok());
         assert!(!first.is_current());
         assert!(replacement.is_current());
         assert_eq!(replacement.room().member_count(), 1);
 
-        let second = state
-            .try_join_room("room-001", "bob", "session-b")
-            .unwrap();
+        let second = state.try_join_room("room-001", "bob", "session-b").unwrap();
         assert_eq!(second.room().member_count(), 2);
         assert!(matches!(
             state.try_join_room("room-001", "carol", "session-c"),
@@ -584,9 +574,7 @@ mod tests {
         assert_eq!(replacement.room().member_count(), 1);
         drop(replacement);
         assert!(state.rooms.is_empty());
-        assert!(state
-            .try_join_room("room-002", "alice", "session-new")
-            .is_ok());
+        assert!(state.try_join_room("room-002", "alice", "session-new").is_ok());
     }
 
     #[tokio::test]
@@ -595,15 +583,9 @@ mod tests {
         let first_state = state.clone();
         let second_state = state.clone();
         let third_state = state.clone();
-        let first = tokio::spawn(async move {
-            first_state.try_join_room("race-room", "alice", "session-a")
-        });
-        let second = tokio::spawn(async move {
-            second_state.try_join_room("race-room", "bob", "session-b")
-        });
-        let third = tokio::spawn(async move {
-            third_state.try_join_room("race-room", "carol", "session-c")
-        });
+        let first = tokio::spawn(async move { first_state.try_join_room("race-room", "alice", "session-a") });
+        let second = tokio::spawn(async move { second_state.try_join_room("race-room", "bob", "session-b") });
+        let third = tokio::spawn(async move { third_state.try_join_room("race-room", "carol", "session-c") });
         let leases = [
             first.await.expect("join task must complete"),
             second.await.expect("join task must complete"),
@@ -631,9 +613,7 @@ mod tests {
         drop(global);
         assert!(state.try_acquire_ws_slot().is_some());
 
-        let user = state
-            .try_reserve_user_connection("alice")
-            .expect("first user slot");
+        let user = state.try_reserve_user_connection("alice").expect("first user slot");
         assert!(state.try_reserve_user_connection("alice").is_none());
         drop(user);
         assert!(state.try_reserve_user_connection("alice").is_some());

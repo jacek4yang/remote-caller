@@ -142,10 +142,7 @@ mod tests {
         handler::Handler,
         service::{
             ServiceHandler, Transport,
-            session::{
-                Identifier, MAX_SESSION_LIFETIME, Session, SessionManager,
-                SessionManagerOptions,
-            },
+            session::{Identifier, MAX_SESSION_LIFETIME, Session, SessionManager, SessionManagerOptions},
         },
         statistics::Statistics,
     };
@@ -187,22 +184,12 @@ mod tests {
     fn turn_session_table_is_hard_bounded() {
         let sessions = manager(4);
         for port in 20_000..20_004 {
-            assert!(
-                sessions
-                    .get_session_or_default(&identifier(port))
-                    .get_ref()
-                    .is_some()
-            );
+            assert!(sessions.get_session_or_default(&identifier(port)).get_ref().is_some());
         }
 
         assert_eq!(sessions.sessions_len(), 4);
         assert_eq!(sessions.max_sessions(), 4);
-        assert!(
-            sessions
-                .get_session_or_default(&identifier(20_004))
-                .get_ref()
-                .is_none()
-        );
+        assert!(sessions.get_session_or_default(&identifier(20_004)).get_ref().is_none());
         assert_eq!(sessions.sessions_len(), 4);
     }
 

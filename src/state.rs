@@ -28,20 +28,10 @@ pub struct Room {
 }
 
 impl Room {
-    fn new(
-        slot: OwnedSemaphorePermit,
-        username: String,
-        connection_id: String,
-    ) -> (Self, oneshot::Receiver<()>) {
+    fn new(slot: OwnedSemaphorePermit, username: String, connection_id: String) -> (Self, oneshot::Receiver<()>) {
         let (cancel, cancelled) = oneshot::channel();
         let mut members = HashMap::with_capacity(2);
-        members.insert(
-            username,
-            RoomMember {
-                connection_id,
-                cancel,
-            },
-        );
+        members.insert(username, RoomMember { connection_id, cancel });
         let (sender, _) = broadcast::channel(64);
         (
             Self {
@@ -54,29 +44,17 @@ impl Room {
     }
 
     fn members(&self) -> MutexGuard<'_, HashMap<String, RoomMember>> {
-        self.members
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.members.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn join(
-        &self,
-        username: String,
-        connection_id: String,
-    ) -> Result<oneshot::Receiver<()>, JoinRoomError> {
+    fn join(&self, username: String, connection_id: String) -> Result<oneshot::Receiver<()>, JoinRoomError> {
         let mut members = self.members();
         if !members.contains_key(&username) && members.len() >= 2 {
             return Err(JoinRoomError::Full);
         }
 
         let (cancel, cancelled) = oneshot::channel();
-        if let Some(previous) = members.insert(
-            username,
-            RoomMember {
-                connection_id,
-                cancel,
-            },
-        ) {
+        if let Some(previous) = members.insert(username, RoomMember { connection_id, cancel }) {
             // A reconnect atomically supersedes its stale socket instead of
             // temporarily consuming a third room seat.
             let _ = previous.cancel.send(());
@@ -134,8 +112,7 @@ impl RoomLease {
     }
 
     pub fn is_current(&self) -> bool {
-        self.room
-            .is_current(&self.username, &self.connection_id)
+        self.room.is_current(&self.username, &self.connection_id)
     }
 }
 
@@ -161,8 +138,7 @@ impl Drop for UserConnectionLease {
             let remove = *count == 0;
             drop(count);
             if remove {
-                self.counters
-                    .remove_if(&self.username, |_, current| *current == 0);
+                self.counters.remove_if(&self.username, |_, current| *current == 0);
             }
         }
     }
@@ -251,12 +227,7 @@ impl AppState {
     /// guarded, preventing empty-room cleanup from racing with a new join.
     /// A reconnect for the same account replaces the stale socket and does not
     /// consume a third participant seat.
-    pub fn try_join_room(
-        &self,
-        id: &str,
-        username: &str,
-        connection_id: &str,
-    ) -> Result<RoomLease, JoinRoomError> {
+    pub fn try_join_room(&self, id: &str, username: &str, connection_id: &str) -> Result<RoomLease, JoinRoomError> {
         let username = username.to_owned();
         let connection_id = connection_id.to_owned();
         let (room, cancelled) = match self.rooms.entry(id.to_owned()) {
@@ -271,8 +242,7 @@ impl AppState {
                     .clone()
                     .try_acquire_owned()
                     .map_err(|_| JoinRoomError::Capacity)?;
-                let (room, cancelled) =
-                    Room::new(slot, username.clone(), connection_id.clone());
+                let (room, cancelled) = Room::new(slot, username.clone(), connection_id.clone());
                 let room = Arc::new(room);
                 entry.insert(room.clone());
                 (room, cancelled)
@@ -320,9 +290,7 @@ impl AppState {
                 _slot: slot,
             },
         );
-        self.metrics
-            .issued_ws_tickets
-            .fetch_add(1, Ordering::Relaxed);
+        self.metrics.issued_ws_tickets.fetch_add(1, Ordering::Relaxed);
         Some((ticket, expires_at))
     }
 
