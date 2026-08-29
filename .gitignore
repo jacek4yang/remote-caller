@@ -1,6 +1,8 @@
 /target/
 /target-wsl/
 /dist/
+/frontend/node_modules/
+/frontend/.vite/
 /remote-caller-v*-linux-x86_64.tar.gz
 /SHA256SUMS
 /.env

@@ -14,7 +14,7 @@ Browser A  <------------- WebRTC media ------------->  Browser B
   Nginx  ---- HTTP / WS ---->  127.0.0.1:8080 Rust service
 ```
 
-Media is peer-to-peer whenever ICE can find a direct path. Both browsers use the embedded Rust TURN service when a restrictive network prevents direct connectivity. No database, Redis, Coturn, Docker, Kubernetes, Node.js backend, or external identity service is required.
+Media is peer-to-peer whenever ICE can find a direct path. Both browsers use the embedded Rust TURN service when a restrictive network prevents direct connectivity. The mobile-first browser client is built with Vite, React, and TypeScript; production still needs no Node.js backend. No database, Redis, Coturn, Docker, Kubernetes, or external identity service is required.
 
 ## Features
 
@@ -22,6 +22,7 @@ Media is peer-to-peer whenever ICE can find a direct path. Both browsers use the
 - Argon2id password hashes and bounded password-verification concurrency.
 - HS256 JWTs with required issuer, audience, issued-at, and expiry claims.
 - Short-lived, single-use WebSocket tickets, so JWTs never appear in WebSocket URLs.
+- A persistent signed-in call dashboard for creating, sharing, and joining rooms.
 - Two distinct accounts per room, with atomic same-account reconnect replacement.
 - Hard limits for rooms, tickets, WebSockets, signaling rate, message size, and TURN sessions.
 - Serialized SDP/ICE processing, queued candidates, Perfect Negotiation glare handling, and stale-candidate filtering.
@@ -57,7 +58,7 @@ For a source build:
 - Linux x86_64;
 - Rust 1.85 or later (edition 2024 support);
 - a C toolchain, CMake, and `pkg-config` for AWS-LC;
-- Node.js only for the optional JavaScript syntax check.
+- Node.js 20.19+ or 22.12+ and npm for the Vite/React frontend build.
 
 For the published Linux artifact, Rust and build tools are not required. Production additionally needs Nginx, systemd, a DNS name, and a browser-trusted TLS certificate.
 
@@ -76,7 +77,16 @@ unset PASSWORD_TWO
 
 Copy [`.env.example`](.env.example), replace every placeholder, and load it using a mechanism appropriate to your shell. The application does not parse `.env` files itself. For local browser testing, set `EMBEDDED_TURN=false`, `SERVE_STATIC=true`, and keep `BIND_ADDR=127.0.0.1:8080`.
 
-Run the normal checks and start the service:
+Install the locked frontend dependencies and run all frontend checks:
+
+```bash
+npm ci --prefix frontend
+npm run check --prefix frontend
+```
+
+`frontend/` is the React/TypeScript source. Its Vite production build is written to the tracked `web/` directory used by both the Rust static server and the release package. CI rebuilds it and rejects stale generated files.
+
+Run the normal Rust checks and start the service:
 
 ```bash
 cargo fmt --all -- --check
@@ -87,6 +97,14 @@ cargo run --locked
 ```
 
 Open `http://localhost:8080`. Browsers treat localhost as a secure context, but real phones and cross-network tests require trusted HTTPS.
+
+For frontend development with hot reload, keep the Rust service on `127.0.0.1:8080`, then run this in another terminal:
+
+```bash
+npm run dev --prefix frontend
+```
+
+Open `http://127.0.0.1:5173`; Vite proxies `/api` and `/ws` to the Rust service.
 
 ## Account configuration
 
