@@ -51,7 +51,7 @@ Ubuntu 22.04/24.04：
 
 最后一条只验证 Linux loader 能启动二进制；普通服务启动需要完整环境配置。发布二进制以 Ubuntu 22.04、x86-64-v2 为兼容基线。
 
-如从源码构建，需要 Rust 1.85+、C/C++ toolchain、CMake 和 pkg-config：
+如从源码构建，需要 Rust 1.85+、Node.js 20.19+/22.12+、C/C++ toolchain、CMake 和 pkg-config：
 
     sudo apt install build-essential cmake pkg-config
     chmod +x scripts/build-release.sh

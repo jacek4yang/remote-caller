@@ -25,11 +25,15 @@ docs(deploy): clarify embedded TURN firewall rules
 ## 合并前检查
 
 ```powershell
+npm ci --prefix frontend
+npm run check --prefix frontend
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features
 cargo build --release --locked
 ```
+
+前端源码位于 `frontend/`，Vite 产物位于 `web/`。修改前端后必须同时提交重新生成的 `web/`；CI 会重建并检查二者完全同步。
 
 PR 使用 squash merge，标题作为最终提交信息。至少一人评审，CI 必须通过。涉及浏览器行为的改动需写明实测设备和系统版本。
 
@@ -41,4 +45,4 @@ PR 使用 squash merge，标题作为最终提交信息。至少一人评审，C
 
 ## 仓库保护建议
 
-在 GitHub 设置中要求 PR、至少一个批准、解决全部 review conversation、CI 的 `rust` job 通过、禁止 force push、管理员也遵守保护规则；只为 release workflow 保留 tag 发布所需的 `contents: write` 权限。
+在 GitHub 设置中要求 PR、至少一个批准、解决全部 review conversation、CI 的 `frontend` 与 `rust` job 通过、禁止 force push、管理员也遵守保护规则；只为 release workflow 保留 tag 发布所需的 `contents: write` 权限。

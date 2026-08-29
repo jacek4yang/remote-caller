@@ -7,6 +7,8 @@ TAG="v$VERSION"
 ROOT="remote-caller-$TAG-linux-x86_64"
 ARCHIVE="$ROOT.tar.gz"
 
+npm ci --prefix frontend
+npm run check --prefix frontend
 cargo fmt --all -- --check
 cargo fmt --manifest-path vendor/turn-server/Cargo.toml --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
