@@ -1,3 +1,13 @@
+export class RoomError extends Error {
+  readonly code: 'too-short' | 'invalid';
+
+  constructor(code: 'too-short' | 'invalid') {
+    super(code);
+    this.name = 'RoomError';
+    this.code = code;
+  }
+}
+
 export function makeRoom(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(8));
   return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
@@ -7,18 +17,29 @@ export function sanitizeRoom(value: string): string {
   return value.trim().replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
 }
 
+/** Validates + normalizes a room id, throwing a typed error the UI can translate. */
 export function validateRoom(value: string): string {
   const room = sanitizeRoom(value);
-  if (room.length < 6) throw new Error('房间号至少需要 6 个字符');
+  if (room.length < 6) throw new RoomError('too-short');
   return room;
 }
 
-export function invitedRoomFromLocation(search = location.search): string {
-  return sanitizeRoom(new URLSearchParams(search).get('room') || '');
+/** Resolves the room a call should start in.
+ *  A creator's room is minted fresh at start time; a joiner must supply a valid
+ *  invite code. Kept pure so the create-call path is unit tested. */
+export function resolveStartRoom(flavor: 'create' | 'join', room: string): string {
+  return flavor === 'create' ? makeRoom() : validateRoom(room);
 }
 
-export function roomUrl(room: string): string {
-  const url = new URL(location.pathname, location.origin);
+/** Returns a non-empty normalized room when present, else ''. */
+export function invitedRoomFromLocation(search = location.search): string {
+  const raw = sanitizeRoom(new URLSearchParams(search).get('room') || '');
+  if (raw.length < 6) return '';
+  return raw;
+}
+
+export function roomUrl(room: string, host = location.host, path = location.pathname): string {
+  const url = new URL(path, location.protocol === 'https:' ? 'https://' + host : 'http://' + host);
   url.searchParams.set('room', sanitizeRoom(room));
   return url.href;
 }
@@ -28,12 +49,15 @@ export function replaceRoomUrl(room: string): void {
   history.replaceState({}, '', clean ? roomUrl(clean) : location.pathname);
 }
 
+export function clearRoomUrl(): void {
+  history.replaceState({}, '', location.pathname);
+}
+
 export async function copyText(value: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(value);
     return;
   }
-
   const field = document.createElement('textarea');
   field.value = value;
   field.setAttribute('readonly', '');
@@ -48,11 +72,16 @@ export async function copyText(value: string): Promise<void> {
   }
 }
 
-export async function shareRoom(room: string): Promise<'shared' | 'copied'> {
+export interface SharePayload {
+  title: string;
+  text: string;
+}
+
+export async function shareRoom(room: string, payload: SharePayload): Promise<'shared' | 'copied'> {
   const clean = validateRoom(room);
   const url = roomUrl(clean);
   if (navigator.share) {
-    await navigator.share({ title: '加入我的通话', text: '房间号：' + clean, url });
+    await navigator.share({ title: payload.title, text: payload.text, url });
     return 'shared';
   }
   await copyText(url);

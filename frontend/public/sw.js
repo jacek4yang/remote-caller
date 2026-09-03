@@ -1,6 +1,6 @@
 const CACHE_PREFIX = 'remote-caller-';
 const CACHE = 'remote-caller-v3';
-const PRECACHE = ['/', '/icon.svg', '/manifest.webmanifest'];
+const PRECACHE = ['/', '/theme-init.js', '/icon.svg', '/manifest.webmanifest'];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(PRECACHE)).then(() => self.skipWaiting()));
