@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { makeRoom, sanitizeRoom, validateRoom } from './rooms';
+import { RoomError, makeRoom, sanitizeRoom, validateRoom } from './rooms';
 
 describe('room helpers', () => {
   it('generates a high-entropy URL-safe room code', () => {
@@ -13,8 +13,9 @@ describe('room helpers', () => {
     expect(sanitizeRoom('a'.repeat(80))).toHaveLength(64);
   });
 
-  it('rejects undersized rooms', () => {
-    expect(() => validateRoom('tiny')).toThrow('房间号至少需要 6 个字符');
+  it('rejects undersized rooms with a typed, translatable error', () => {
+    expect(() => validateRoom('tiny')).toThrow(RoomError);
+    expect(() => validateRoom('tiny')).toThrowError(expect.objectContaining({ code: 'too-short' }));
     expect(validateRoom('team-123')).toBe('team-123');
   });
 });
