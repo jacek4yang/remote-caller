@@ -310,19 +310,26 @@ export class CallSession {
     if (!this.localStream) return;
     let track = this.localStream.getVideoTracks()[0];
     if (!track) {
+      // Camera was fully released (e.g. voice-only start): acquire it now.
+      let extra: MediaStream | null = null;
       try {
-        const extra = await navigator.mediaDevices.getUserMedia({
+        extra = await navigator.mediaDevices.getUserMedia({
           video: this.videoConstraints(),
         });
-        [track] = extra.getVideoTracks();
-        if (!track) throw new Error('no video track');
-        this.localStream.addTrack(track);
+        const acquired = extra.getVideoTracks()[0];
+        if (!acquired) throw new Error('no video track');
+        // The session may have ended while the permission prompt was up.
+        if (!this.localStream || !this.snapshot.active) throw new Error('session ended');
+        this.localStream.addTrack(acquired);
         if (this.pc && this.pc.connectionState !== 'closed') {
-          this.pc.addTrack(track, this.localStream);
+          this.pc.addTrack(acquired, this.localStream);
         }
-        this.watchTrackEnded(track);
+        this.watchTrackEnded(acquired);
+        extra = null; // adopted — do not stop on a later throw
+        track = acquired;
       } catch {
-        this.callbacks.onToast('call.toast.cameraFailed');
+        extra?.getTracks().forEach(item => item.stop());
+        if (this.snapshot.active) this.callbacks.onToast('call.toast.cameraFailed');
         return;
       }
     } else {
@@ -341,18 +348,24 @@ export class CallSession {
 
     const next = await this.pickNextVideoDevice();
     if (!next) {
-      this.callbacks.onToast('call.toast.switchFailed');
+      if (this.snapshot.active) this.callbacks.onToast('call.toast.switchFailed');
       return;
     }
+    let stream: MediaStream | null = null;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: next.constraints });
+      stream = await navigator.mediaDevices.getUserMedia({ video: next.constraints });
       const replacement = stream.getVideoTracks()[0];
       if (!replacement) throw new Error('no video track');
+      // The session may have ended while the camera was starting.
+      if (!this.localStream || !this.snapshot.active) throw new Error('session ended');
       await this.replaceVideoTrack(replacement);
+      stream = null; // adopted
       this.cameraFacing = next.facing ?? this.cameraFacing;
       this.cameraDeviceId = next.deviceId ?? '';
     } catch (error) {
-      this.callbacks.onToast('call.toast.switchFailed');
+      // Keep the previous camera running and release the orphan, if any.
+      stream?.getTracks().forEach(track => track.stop());
+      if (this.snapshot.active) this.callbacks.onToast('call.toast.switchFailed');
       console.warn('camera switch failed', error);
     }
   }
@@ -361,44 +374,57 @@ export class CallSession {
     const oldTrack = this.localStream?.getVideoTracks()[0];
     if (!oldTrack || !this.localStream) return;
     if (!deviceId || deviceId === this.cameraDeviceId) return;
+    let stream: MediaStream | null = null;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         video: cameraConstraints({ deviceId }),
       });
       const replacement = stream.getVideoTracks()[0];
       if (!replacement) throw new Error('no video track');
+      // The session may have ended while the camera was starting.
+      if (!this.localStream || !this.snapshot.active) throw new Error('session ended');
       await this.replaceVideoTrack(replacement);
+      stream = null; // adopted
       this.cameraDeviceId = deviceId;
       this.cameraFacing = 'user';
     } catch (error) {
-      this.callbacks.onToast('call.toast.cameraFailed');
+      // Keep the previous camera running and release the orphan, if any.
+      stream?.getTracks().forEach(track => track.stop());
+      if (this.snapshot.active) this.callbacks.onToast('call.toast.cameraFailed');
       console.warn('video input switch failed', error);
     }
   }
 
   async switchAudioInput(deviceId: string): Promise<void> {
     if (!this.localStream || deviceId === this.audioDeviceId) return;
+    let stream: MediaStream | null = null;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         audio: microphoneConstraints(deviceId),
       });
       const replacement = stream.getAudioTracks()[0];
       if (!replacement) throw new Error('no audio track');
-      const previousEnabled = this.localStream.getAudioTracks().some(track => track.enabled);
+      // The session may have ended while the mic was starting.
+      if (!this.localStream || !this.snapshot.active) throw new Error('session ended');
+      const target = this.localStream;
+      const previousEnabled = target.getAudioTracks().some(track => track.enabled);
       const sender = this.pc?.getSenders().find(item => item.track?.kind === 'audio');
       await sender?.replaceTrack(replacement);
-      this.localStream.getAudioTracks().forEach(track => {
-        this.localStream?.removeTrack(track);
+      target.getAudioTracks().forEach(track => {
+        target.removeTrack(track);
         track.stop();
       });
       replacement.enabled = previousEnabled;
-      this.localStream.addTrack(replacement);
+      target.addTrack(replacement);
+      stream = null; // adopted
       this.audioDeviceId = deviceId;
       this.tuneLocalTracks();
-      this.patch({ localStream: this.localStream, localMuted: !previousEnabled });
+      this.patch({ localStream: target, localMuted: !previousEnabled });
       this.sendMediaState();
     } catch (error) {
-      this.callbacks.onToast('call.toast.micFailed');
+      // Keep the previous microphone running and release the orphan, if any.
+      stream?.getTracks().forEach(track => track.stop());
+      if (this.snapshot.active) this.callbacks.onToast('call.toast.micFailed');
       console.warn('audio input switch failed', error);
     }
   }
@@ -517,26 +543,24 @@ export class CallSession {
   }
 
   private async replaceVideoTrack(replacement: MediaStreamTrack): Promise<void> {
-    const oldTrack = this.localStream?.getVideoTracks()[0];
-    if (!oldTrack || !this.localStream) {
+    const stream = this.localStream;
+    const oldTrack = stream?.getVideoTracks()[0];
+    if (!oldTrack || !stream) {
+      // The session may have ended while the replacement camera was starting.
       replacement.stop();
       throw new Error('no local video to replace');
     }
+    // Re-point the sender first so the far side keeps a live video track; the
+    // peer may be absent (no sender yet) — the local stream swap below still
+    // applies and ensurePeerConnection will pick up the replacement later.
     const sender = this.pc?.getSenders().find(item => item.track?.kind === 'video');
     await sender?.replaceTrack(replacement);
-    if (sender?.track !== replacement) {
-      // No sender (peer absent): keep the old track stopped and stash the new one.
-      this.localStream.removeTrack(oldTrack);
-      oldTrack.stop();
-      this.localStream.addTrack(replacement);
-    } else {
-      this.localStream.removeTrack(oldTrack);
-      oldTrack.stop();
-      this.localStream.addTrack(replacement);
-    }
+    stream.removeTrack(oldTrack);
+    oldTrack.stop();
+    stream.addTrack(replacement);
     replacement.contentHint = 'detail';
     this.watchTrackEnded(replacement);
-    this.patch({ localStream: this.localStream, localVideoEnabled: true });
+    this.patch({ localStream: stream, localVideoEnabled: true });
     this.sendMediaState();
   }
 
@@ -676,12 +700,13 @@ export class CallSession {
     } else if (message.type === 'media-state') {
       const media = message.payload as { audio?: boolean; video?: boolean } | undefined;
       if (!media) return;
-      const hadRemoteVideo = !this.snapshot.remoteVideoOff;
+      // The server relays each member's media-state only to the other member
+      // (src/signal.rs: event.from != claims.sub), so every message we receive
+      // here describes the remote peer.
       this.patch({
         remoteMuted: media.audio === false,
         remoteVideoOff: media.video === false,
       });
-      void hadRemoteVideo;
     }
   }
 
@@ -708,7 +733,7 @@ export class CallSession {
     this.localStream.getTracks().forEach(track => pc.addTrack(track, this.localStream as MediaStream));
     await configureVideoCodecs(pc);
     await configureAudioSender(pc);
-    await this.applyQualityTier(0, pc, false);
+    await this.applyQualityTier(0, pc);
     pc.addEventListener('icecandidate', event => {
       if (event.candidate) this.sendSignal('ice-candidate', event.candidate);
     });
@@ -739,13 +764,13 @@ export class CallSession {
       }
       return;
     }
-    // New stream id: keep existing tracks if this browser reused the stream
-    // object poorly; prefer the richer of the two.
+    // New stream id: fold any previously playing tracks into the incoming
+    // stream so audio is never dropped when the peer adds video mid-call.
+    // `merged` becomes the only referenced remote stream, so relocating the
+    // tracks here is safe even where a track can belong to one stream only.
     const merged = incoming;
     for (const track of previous.getTracks()) {
       if (!merged.getTracks().some(item => item.id === track.id)) {
-        // Cannot move tracks between streams of different ids; keep both by
-        // layering into a fresh composite stream.
         merged.addTrack(track);
       }
     }
@@ -828,7 +853,7 @@ export class CallSession {
     if (this.socket?.readyState !== WebSocket.OPEN) return;
     const message = JSON.stringify({ type, payload });
     if (message.length <= 65_536) this.socket.send(message);
-    else this.callbacks.onToast('call.toast.switchFailed');
+    else if (this.snapshot.active) this.callbacks.onToast('call.toast.signalTooLarge');
   }
 
   private showPeer(name?: string): void {
@@ -983,9 +1008,9 @@ export class CallSession {
   private async applyQualityTier(
     tierIndex: number,
     pc = this.pc,
-    _notify = true,
   ): Promise<void> {
     const tier = QUALITY_TIERS[tierIndex];
+    if (!tier) return;
     const sender = pc?.getSenders().find(item => item.track?.kind === 'video');
     if (!sender) return;
     const parameters = sender.getParameters();

@@ -61,7 +61,7 @@ export function LobbyView({ flavor, room, defaultMode, localName, onCancel, onSt
 
   const startRef = useRef<() => void>(() => undefined);
   startRef.current = () => {
-    if (!stream || startBusy) return;
+    if (!stream || startBusy || startingVideo) return;
     const detached = media.detach();
     if (!detached) return;
     setStartBusy(true);
@@ -83,6 +83,11 @@ export function LobbyView({ flavor, room, defaultMode, localName, onCancel, onSt
   }, [mode, media]);
 
   const showVideoArt = mode === 'video' && media.videoOn && Boolean(stream?.getVideoTracks().length);
+  // A mode switch to video starts the camera asynchronously. Starting the call
+  // before that finishes would hand the engine an audio-only stream and the
+  // late camera grant would be discarded — so wait for the camera to go live
+  // (unless it already failed and the call may proceed voice-only).
+  const startingVideo = mode === 'video' && !media.videoOn && !media.cameraError;
   const fatalKey = media.fatalError ? ERROR_KEY[media.fatalError] : null;
   const cameraIssueKey = media.cameraError && !fatalKey ? ERROR_KEY[media.cameraError] : null;
 
@@ -272,7 +277,7 @@ export function LobbyView({ flavor, room, defaultMode, localName, onCancel, onSt
               variant="primary"
               size="lg"
               block
-              busy={media.busy || startBusy}
+              busy={media.busy || startBusy || startingVideo}
               disabled={!stream || media.fatalError !== null}
               onClick={() => startRef.current()}
             >

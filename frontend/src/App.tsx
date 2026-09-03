@@ -11,11 +11,10 @@ import {
   clearRoomUrl,
   copyText,
   invitedRoomFromLocation,
-  makeRoom,
   replaceRoomUrl,
+  resolveStartRoom,
   roomUrl,
   sanitizeRoom,
-  shareRoom,
   validateRoom,
   type RoomError,
 } from './lib/rooms';
@@ -235,15 +234,13 @@ export default function App() {
     const nextSession = session;
     if (!nextSession) return;
     try {
-      const room = validateRoom(options.room);
+      // A creator's room is minted at start time; a joiner validates the code
+      // they were given. Never trust an empty create-room through validateRoom.
+      const flavor = lobby?.flavor ?? 'join';
+      const room = resolveStartRoom(flavor, options.room);
       rememberMode(options.mode);
-      if (lobby?.flavor === 'create') {
-        replaceRoomUrl(room);
-        setIsCreator(true);
-      } else {
-        replaceRoomUrl(room);
-        setIsCreator(false);
-      }
+      replaceRoomUrl(room);
+      setIsCreator(flavor === 'create');
       await call.start({
         room,
         mode: options.mode,

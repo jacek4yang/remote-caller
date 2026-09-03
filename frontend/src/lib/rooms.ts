@@ -24,6 +24,13 @@ export function validateRoom(value: string): string {
   return room;
 }
 
+/** Resolves the room a call should start in.
+ *  A creator's room is minted fresh at start time; a joiner must supply a valid
+ *  invite code. Kept pure so the create-call path is unit tested. */
+export function resolveStartRoom(flavor: 'create' | 'join', room: string): string {
+  return flavor === 'create' ? makeRoom() : validateRoom(room);
+}
+
 /** Returns a non-empty normalized room when present, else ''. */
 export function invitedRoomFromLocation(search = location.search): string {
   const raw = sanitizeRoom(new URLSearchParams(search).get('room') || '');

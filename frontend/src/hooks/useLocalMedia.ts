@@ -260,8 +260,40 @@ export function useLocalMedia(options: UseLocalMediaOptions): LocalMediaControll
 
   const setAudioOn = useCallback(async (on: boolean) => {
     setAudioFlags(on);
-    for (const track of streamRef.current?.getAudioTracks() ?? []) track.enabled = on;
-  }, [setAudioFlags]);
+    if (!on) {
+      for (const track of streamRef.current?.getAudioTracks() ?? []) track.enabled = false;
+      return;
+    }
+    if (streamRef.current?.getAudioTracks().length) {
+      for (const track of streamRef.current.getAudioTracks()) track.enabled = true;
+      return;
+    }
+    // Lobby was started voice-only (no audio acquired yet): turn the mic on
+    // now, guarded so a cancelled call cannot leak a warm microphone.
+    await runExclusive(async () => {
+      if (releasedRef.current || handedOffRef.current) return;
+      try {
+        const mic = await navigator.mediaDevices.getUserMedia({
+          audio: microphoneConstraints(optsRef.current.audioDeviceId || undefined),
+          video: false,
+        });
+        if (releasedRef.current || handedOffRef.current) {
+          mic.getTracks().forEach(track => track.stop());
+          return;
+        }
+        const track = mic.getAudioTracks()[0];
+        if (track) {
+          track.enabled = true;
+          clearKind('audio', track);
+          setMicDeviceId(track.getSettings().deviceId || micDeviceId);
+        } else {
+          mic.getTracks().forEach(item => item.stop());
+        }
+      } catch {
+        setAudioFlags(false);
+      }
+    });
+  }, [runExclusive, clearKind, setAudioFlags, micDeviceId]);
 
   const setVideoOn = useCallback(async (on: boolean) => {
     if (on === videoOnRef.current) return;

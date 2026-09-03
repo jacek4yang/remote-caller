@@ -18,7 +18,7 @@
   --on-accent: #06201a;
   --accent-soft: rgba(84, 230, 191, 0.12);
   --accent-soft-strong: rgba(84, 230, 191, 0.2);
-  --accent-contrast: #0f7d69;
+  --accent-contrast: #1aa99b;
 
   /* ---------- Surfaces ---------- */
   --bg: #070a12;
@@ -36,7 +36,7 @@
   /* ---------- Text ---------- */
   --text-1: #eef2f9;
   --text-2: #a8b3c6;
-  --text-3: #6e7a90;
+  --text-3: #7d8aa2;
   --text-invert: #0a0f1a;
 
   /* ---------- Status ---------- */
@@ -110,7 +110,7 @@
   --on-accent: #ffffff;
   --accent-soft: rgba(15, 118, 110, 0.1);
   --accent-soft-strong: rgba(15, 118, 110, 0.17);
-  --accent-contrast: #0d9488;
+  --accent-contrast: #0f766e;
 
   --bg: #f4f6f9;
   --bg-elevated: #eef1f6;
@@ -125,7 +125,7 @@
 
   --text-1: #0e1526;
   --text-2: #4d586c;
-  --text-3: #78849a;
+  --text-3: #5d6b82;
   --text-invert: #ffffff;
 
   --success: #15803d;
