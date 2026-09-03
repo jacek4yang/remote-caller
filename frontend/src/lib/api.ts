@@ -10,15 +10,22 @@ export interface ClientConfig {
   iceServers: RTCIceServer[];
 }
 
+export type ErrorCode =
+  | 'unauthorized'
+  | 'room_full'
+  | 'rate_limited'
+  | 'capacity_reached'
+  | (string & {});
+
 interface ErrorResponse {
-  error?: string;
+  error?: ErrorCode;
   message?: string;
 }
 
 export class ApiError extends Error {
-  readonly code: string;
+  readonly code: ErrorCode;
 
-  constructor(message: string, code: string) {
+  constructor(message: string, code: ErrorCode) {
     super(message);
     this.name = 'ApiError';
     this.code = code;
@@ -35,12 +42,7 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   });
   const data = await response.json().catch(() => ({})) as T & ErrorResponse;
   if (!response.ok) {
-    const message = data.error === 'unauthorized' ? '认证失败或登录已过期'
-      : data.error === 'room_full' ? '房间已满（当前版本支持两人通话）'
-      : data.error === 'rate_limited' ? '请求过于频繁，请稍后再试'
-      : data.error === 'capacity_reached' ? '服务正在保护资源，请稍后重试'
-      : data.message || '服务请求失败 (' + response.status + ')';
-    throw new ApiError(message, data.error || 'http_' + response.status);
+    throw new ApiError(data.message || 'request failed (' + response.status + ')', data.error || ('http_' + response.status));
   }
   return data;
 }
@@ -54,12 +56,4 @@ export async function authenticate(username: string, password: string): Promise<
     headers: { Authorization: 'Bearer ' + session.token },
   });
   return { ...session, ...config };
-}
-
-export function humanError(error: unknown): string {
-  console.error(error);
-  if (!window.isSecureContext && location.hostname !== 'localhost') {
-    return '浏览器要求通过 HTTPS 才能使用摄像头和麦克风';
-  }
-  return error instanceof Error && error.message ? error.message : '出现了意外错误，请稍后重试';
 }

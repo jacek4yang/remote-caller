@@ -1,9 +1,20 @@
 import { ApiError, request } from '../lib/api';
+import {
+  callMediaConstraints,
+  cameraConstraints,
+  kindOfMediaError,
+  listDevices,
+  microphoneConstraints,
+} from '../lib/media';
+import type { MessageKey } from '../i18n/messages';
 import { QUALITY_TIERS, classifyNetwork, ewma } from './quality';
 
 const MAX_PENDING_ICE_CANDIDATES = 256;
 
 export type CallMode = 'video' | 'audio';
+export type WsPhase = 'idle' | 'opening' | 'open' | 'reconnecting';
+export type PcPhase = 'none' | 'connecting' | 'connected' | 'reconnecting';
+export type Quality = 'excellent' | 'good' | 'unstable' | 'poor';
 
 export interface SessionCredentials {
   token: string;
@@ -14,27 +25,57 @@ export interface SessionCredentials {
 export interface StartCallOptions extends SessionCredentials {
   room: string;
   mode: CallMode;
+  /** A stream already acquired by the pre-call lobby. The session takes ownership. */
+  stream?: MediaStream;
+  cameraDeviceId?: string;
+  audioDeviceId?: string;
+}
+
+export interface CallNotice {
+  id: number;
+  key: MessageKey;
+  params?: Record<string, string | number>;
 }
 
 export interface CallSnapshot {
   active: boolean;
   room: string;
-  status: string;
-  waiting: boolean;
+  mode: CallMode;
+  wsPhase: WsPhase;
+  pcPhase: PcPhase;
+  offline: boolean;
+  peerPresent: boolean;
+  peerName: string;
   localStream: MediaStream | null;
   remoteStream: MediaStream | null;
   localMuted: boolean;
   localVideoEnabled: boolean;
+  remoteMuted: boolean;
   remoteVideoOff: boolean;
-  peerName: string;
-  peerPresent: boolean;
-  remoteTitle: string;
-  remoteSubtitle: string;
+  quality: Quality | null;
+  /** Epoch ms of the first connected moment in the current room session. */
+  connectedAt: number | null;
+  notice: CallNotice | null;
+}
+
+export interface CallDiagnostics {
+  wsPhase: WsPhase;
+  pcState: RTCPeerConnectionState | 'none';
+  quality: Quality | null;
+  route: 'direct' | 'relay' | 'unknown';
+  codec: string;
+  resolution: { width: number; height: number } | null;
+  frameRate: number | null;
+  outboundBitrate: number | null;
+  inboundBitrate: number | null;
+  rtt: number | null;
+  loss: number | null;
+  jitter: number | null;
 }
 
 interface CallCallbacks {
   onChange: (snapshot: CallSnapshot) => void;
-  onToast: (message: string) => void;
+  onToast: (key: MessageKey, params?: Record<string, string | number>) => void;
   onAuthExpired: (room: string) => void;
   onRoomFull: (room: string) => void;
 }
@@ -54,6 +95,8 @@ interface SignalMessage {
 interface PreviousStats {
   packetsSent: number;
   packetsLost: number;
+  bytesSent: number;
+  bytesReceived: number;
   timestamp: number;
 }
 
@@ -74,30 +117,52 @@ type ExtendedStats = RTCStats & {
   timestamp: number;
   roundTripTime?: number;
   currentRoundTripTime?: number;
+  jitter?: number;
   state?: string;
   nominated?: boolean;
   selected?: boolean;
   availableOutgoingBitrate?: number;
   qualityLimitationReason?: string;
   framesPerSecond?: number;
+  frameWidth?: number;
+  frameHeight?: number;
+  bytesSent?: number;
+  bytesReceived?: number;
+  codecId?: string;
+  candidateType?: string;
+  localCandidateType?: string;
+  remoteCandidateType?: string;
+  mediaType?: string;
+  mimeType?: string;
+  clockRate?: number;
 };
 
 export function initialCallSnapshot(): CallSnapshot {
   return {
     active: false,
     room: '',
-    status: '等待对方',
-    waiting: true,
+    mode: 'video',
+    wsPhase: 'idle',
+    pcPhase: 'none',
+    offline: false,
+    peerPresent: false,
+    peerName: '',
     localStream: null,
     remoteStream: null,
     localMuted: false,
     localVideoEnabled: false,
+    remoteMuted: false,
     remoteVideoOff: false,
-    peerName: '',
-    peerPresent: false,
-    remoteTitle: '等待对方加入',
-    remoteSubtitle: '把房间链接发给想通话的人',
+    quality: null,
+    connectedAt: null,
+    notice: null,
   };
+}
+
+const QUALITY_LABELS: readonly Quality[] = ['excellent', 'good', 'unstable', 'poor'];
+
+function qualityFromTier(tier: number): Quality {
+  return QUALITY_LABELS[Math.max(0, Math.min(tier, QUALITY_LABELS.length - 1))] ?? 'poor';
 }
 
 export class CallSession {
@@ -109,11 +174,14 @@ export class CallSession {
   private mode: CallMode = 'video';
   private iceServers: RTCIceServer[] = [];
   private cameraFacing: 'user' | 'environment' = 'user';
+  private cameraDeviceId = '';
+  private audioDeviceId = '';
   private localStream: MediaStream | null = null;
   private pc: RTCPeerConnection | null = null;
   private socket: WebSocket | null = null;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private noticeTimer: ReturnType<typeof setTimeout> | null = null;
   private socketGeneration = 0;
   private signalChain: Promise<void> = Promise.resolve();
   private pendingIceCandidates: RTCIceCandidateInit[] = [];
@@ -130,8 +198,9 @@ export class CallSession {
   private goodSamples = 0;
   private previousStats: PreviousStats | null = null;
   private networkEwma: NetworkEwma | null = null;
+  private lastDiagnostics: CallDiagnostics | null = null;
   private lifecycleGeneration = 0;
-
+  private noticeSequence = 0;
   constructor(callbacks: CallCallbacks) {
     this.callbacks = callbacks;
   }
@@ -144,6 +213,10 @@ export class CallSession {
     return this.room;
   }
 
+  getDiagnostics(): CallDiagnostics | null {
+    return this.lastDiagnostics;
+  }
+
   async start(options: StartCallOptions): Promise<void> {
     this.stop();
     const generation = this.lifecycleGeneration;
@@ -152,19 +225,41 @@ export class CallSession {
     this.iceServers = options.iceServers;
     this.room = options.room;
     this.mode = options.mode;
-    await this.acquireMedia(options.mode === 'video');
+    this.cameraDeviceId = options.cameraDeviceId || '';
+    this.audioDeviceId = options.audioDeviceId || '';
+    this.cameraFacing = 'user';
+
+    if (options.stream) {
+      this.localStream = options.stream;
+      this.tuneLocalTracks();
+    } else {
+      try {
+        await this.acquireMedia(this.mode === 'video');
+      } catch (error) {
+        if (generation !== this.lifecycleGeneration) return;
+        const key = this.mediaErrorKey(error);
+        throw new MediaSetupError(key);
+      }
+    }
     if (generation !== this.lifecycleGeneration) {
       this.stopMedia();
       return;
     }
+
+    const muted = !this.localStream?.getAudioTracks().some(track => track.enabled);
+    const videoEnabled = Boolean(this.localStream?.getVideoTracks().some(track => track.enabled));
     this.patch({
       active: true,
       room: this.room,
-      status: '正在连接',
-      waiting: true,
+      mode: this.mode,
+      wsPhase: 'opening',
+      pcPhase: 'none',
       localStream: this.localStream,
-      localMuted: false,
-      localVideoEnabled: options.mode === 'video',
+      localMuted: muted,
+      localVideoEnabled: videoEnabled,
+      peerPresent: false,
+      quality: null,
+      connectedAt: null,
     });
     void this.requestWakeLock();
     void this.connectSocket();
@@ -177,6 +272,7 @@ export class CallSession {
     this.socketGeneration += 1;
     this.clearTimer('reconnectTimer');
     this.clearTimer('iceRestartTimer');
+    this.clearNoticeTimer();
     oldSocket?.close();
     this.pc?.close();
     this.pc = null;
@@ -194,7 +290,7 @@ export class CallSession {
     void this.wakeLock?.release().catch(() => undefined);
     this.wakeLock = null;
     this.stopNetworkMonitor();
-    this.snapshot = { ...initialCallSnapshot(), room: this.room };
+    this.snapshot = { ...initialCallSnapshot(), room: this.room, mode: this.mode, active: false };
     this.callbacks.onChange(this.snapshot);
   }
 
@@ -211,17 +307,22 @@ export class CallSession {
   }
 
   async toggleCamera(): Promise<void> {
-    let track = this.localStream?.getVideoTracks()[0];
     if (!this.localStream) return;
+    let track = this.localStream.getVideoTracks()[0];
     if (!track) {
       try {
-        const extra = await navigator.mediaDevices.getUserMedia({ video: this.videoConstraints() });
-        track = extra.getVideoTracks()[0];
-        if (!track) throw new Error('camera did not provide a video track');
+        const extra = await navigator.mediaDevices.getUserMedia({
+          video: this.videoConstraints(),
+        });
+        [track] = extra.getVideoTracks();
+        if (!track) throw new Error('no video track');
         this.localStream.addTrack(track);
-        if (this.pc) this.pc.addTrack(track, this.localStream);
+        if (this.pc && this.pc.connectionState !== 'closed') {
+          this.pc.addTrack(track, this.localStream);
+        }
+        this.watchTrackEnded(track);
       } catch {
-        this.callbacks.onToast('无法开启摄像头，请检查浏览器权限');
+        this.callbacks.onToast('call.toast.cameraFailed');
         return;
       }
     } else {
@@ -237,22 +338,68 @@ export class CallSession {
   async switchCamera(): Promise<void> {
     const oldTrack = this.localStream?.getVideoTracks()[0];
     if (!oldTrack || !this.localStream) return;
-    this.cameraFacing = this.cameraFacing === 'user' ? 'environment' : 'user';
-    let newTrack: MediaStreamTrack | undefined;
+
+    const next = await this.pickNextVideoDevice();
+    if (!next) {
+      this.callbacks.onToast('call.toast.switchFailed');
+      return;
+    }
     try {
-      const replacementStream = await navigator.mediaDevices.getUserMedia({ video: this.videoConstraints() });
-      [newTrack] = replacementStream.getVideoTracks();
-      if (!newTrack) throw new Error('replacement camera did not provide a video track');
-      const sender = this.pc?.getSenders().find(item => item.track?.kind === 'video');
-      await sender?.replaceTrack(newTrack);
-      this.localStream.removeTrack(oldTrack);
-      oldTrack.stop();
-      this.localStream.addTrack(newTrack);
-      this.patch({ localStream: this.localStream, localVideoEnabled: true });
-    } catch {
-      newTrack?.stop();
-      this.cameraFacing = this.cameraFacing === 'user' ? 'environment' : 'user';
-      this.callbacks.onToast('无法切换摄像头');
+      const stream = await navigator.mediaDevices.getUserMedia({ video: next.constraints });
+      const replacement = stream.getVideoTracks()[0];
+      if (!replacement) throw new Error('no video track');
+      await this.replaceVideoTrack(replacement);
+      this.cameraFacing = next.facing ?? this.cameraFacing;
+      this.cameraDeviceId = next.deviceId ?? '';
+    } catch (error) {
+      this.callbacks.onToast('call.toast.switchFailed');
+      console.warn('camera switch failed', error);
+    }
+  }
+
+  async switchVideoInput(deviceId: string): Promise<void> {
+    const oldTrack = this.localStream?.getVideoTracks()[0];
+    if (!oldTrack || !this.localStream) return;
+    if (!deviceId || deviceId === this.cameraDeviceId) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: cameraConstraints({ deviceId }),
+      });
+      const replacement = stream.getVideoTracks()[0];
+      if (!replacement) throw new Error('no video track');
+      await this.replaceVideoTrack(replacement);
+      this.cameraDeviceId = deviceId;
+      this.cameraFacing = 'user';
+    } catch (error) {
+      this.callbacks.onToast('call.toast.cameraFailed');
+      console.warn('video input switch failed', error);
+    }
+  }
+
+  async switchAudioInput(deviceId: string): Promise<void> {
+    if (!this.localStream || deviceId === this.audioDeviceId) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: microphoneConstraints(deviceId),
+      });
+      const replacement = stream.getAudioTracks()[0];
+      if (!replacement) throw new Error('no audio track');
+      const previousEnabled = this.localStream.getAudioTracks().some(track => track.enabled);
+      const sender = this.pc?.getSenders().find(item => item.track?.kind === 'audio');
+      await sender?.replaceTrack(replacement);
+      this.localStream.getAudioTracks().forEach(track => {
+        this.localStream?.removeTrack(track);
+        track.stop();
+      });
+      replacement.enabled = previousEnabled;
+      this.localStream.addTrack(replacement);
+      this.audioDeviceId = deviceId;
+      this.tuneLocalTracks();
+      this.patch({ localStream: this.localStream, localMuted: !previousEnabled });
+      this.sendMediaState();
+    } catch (error) {
+      this.callbacks.onToast('call.toast.micFailed');
+      console.warn('audio input switch failed', error);
     }
   }
 
@@ -264,17 +411,32 @@ export class CallSession {
 
   handleOnline(): void {
     if (!this.snapshot.active) return;
+    this.patch({ offline: false });
     void this.connectSocket();
     this.scheduleIceRestart(500);
   }
 
   handleOffline(): void {
-    if (this.snapshot.active) this.setStatus('网络已断开', true);
+    if (this.snapshot.active) this.patch({ offline: true });
   }
 
   private patch(patch: Partial<CallSnapshot>): void {
     this.snapshot = { ...this.snapshot, ...patch };
     this.callbacks.onChange(this.snapshot);
+  }
+
+  private flash(key: MessageKey, params?: Record<string, string | number>): void {
+    this.clearNoticeTimer();
+    const notice: CallNotice = { id: ++this.noticeSequence, key, params };
+    this.patch({ notice });
+    this.noticeTimer = setTimeout(() => {
+      if (this.snapshot.notice?.id === notice.id) this.patch({ notice: null });
+    }, 3600);
+  }
+
+  private clearNoticeTimer(): void {
+    if (this.noticeTimer) clearTimeout(this.noticeTimer);
+    this.noticeTimer = null;
   }
 
   private clearTimer(name: 'reconnectTimer' | 'iceRestartTimer'): void {
@@ -283,43 +445,99 @@ export class CallSession {
     this[name] = null;
   }
 
-  private async acquireMedia(withVideo: boolean): Promise<void> {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error('当前浏览器不支持音视频通话，请使用新版 Safari、Chrome 或 Edge');
+  private mediaErrorKey(error: unknown): MessageKey {
+    const kind = kindOfMediaError(error);
+    switch (kind) {
+      case 'denied': return 'lobby.mediaError.denied';
+      case 'notfound': return 'lobby.mediaError.notfound';
+      case 'inuse': return 'lobby.mediaError.inuse';
+      default: return 'lobby.mediaError.generic';
     }
-    try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          sampleRate: { ideal: 48_000 },
-          sampleSize: { ideal: 16 },
-          channelCount: { ideal: 1 },
-        },
-        video: withVideo ? this.videoConstraints() : false,
-      });
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'NotAllowedError') {
-        throw new Error('需要允许摄像头和麦克风权限才能通话');
-      }
-      if (error instanceof DOMException && error.name === 'NotFoundError') {
-        throw new Error('没有找到可用的摄像头或麦克风');
-      }
-      throw error;
-    }
-    this.localStream.getAudioTracks().forEach(track => { track.contentHint = 'speech'; });
-    this.localStream.getVideoTracks().forEach(track => { track.contentHint = 'detail'; });
   }
 
-  private videoConstraints(): MediaTrackConstraints & { resizeMode: string } {
-    return {
-      facingMode: { ideal: this.cameraFacing },
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
-      frameRate: { ideal: 60, max: 60 },
-      resizeMode: 'crop-and-scale',
+  private videoConstraints(): MediaTrackConstraints {
+    if (this.cameraDeviceId) return cameraConstraints({ deviceId: this.cameraDeviceId });
+    return cameraConstraints({ facingMode: this.cameraFacing });
+  }
+
+  private async acquireMedia(withVideo: boolean): Promise<void> {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('unsupported');
+    }
+    this.localStream = await navigator.mediaDevices.getUserMedia(
+      callMediaConstraints(
+        withVideo ? 'video' : 'audio',
+        this.cameraDeviceId ? { deviceId: this.cameraDeviceId } : { facingMode: this.cameraFacing },
+        this.audioDeviceId || undefined,
+      ),
+    );
+    this.tuneLocalTracks();
+  }
+
+  private tuneLocalTracks(): void {
+    const stream = this.localStream;
+    if (!stream) return;
+    stream.getAudioTracks().forEach(track => { track.contentHint = 'speech'; });
+    stream.getVideoTracks().forEach(track => {
+      track.contentHint = 'detail';
+      this.watchTrackEnded(track);
+    });
+  }
+
+  private watchTrackEnded(track: MediaStreamTrack): void {
+    const onEnded = () => {
+      // A device was unplugged or the OS revoked it. Reflect reality calmly.
+      this.patch({
+        localMuted: !this.localStream?.getAudioTracks().some(item => item.enabled && item.readyState === 'live'),
+        localVideoEnabled: Boolean(this.localStream?.getVideoTracks().some(item => item.enabled && item.readyState === 'live')),
+      });
     };
+    track.addEventListener('ended', onEnded, { once: true });
+  }
+
+  private async pickNextVideoDevice(): Promise<
+    | { constraints: MediaTrackConstraints; facing?: 'user' | 'environment'; deviceId?: string }
+    | null
+  > {
+    const kinds = await listDevices();
+    const cameras = kinds.videoinput;
+    const current = this.cameraDeviceId;
+    if (cameras.length > 1 && current) {
+      const index = cameras.findIndex(item => item.deviceId === current);
+      const next = cameras[(index + 1) % cameras.length];
+      return { constraints: cameraConstraints({ deviceId: next.deviceId }), deviceId: next.deviceId };
+    }
+    if (cameras.length > 1 && !current) {
+      return { constraints: cameraConstraints({ deviceId: cameras[0].deviceId }), deviceId: cameras[0].deviceId };
+    }
+    // Single camera: browsers that model facing mode still accept an ideal
+    // facing constraint; the same physical camera is returned.
+    const nextFacing = this.cameraFacing === 'user' ? 'environment' : 'user';
+    return { constraints: cameraConstraints({ facingMode: nextFacing }), facing: nextFacing };
+  }
+
+  private async replaceVideoTrack(replacement: MediaStreamTrack): Promise<void> {
+    const oldTrack = this.localStream?.getVideoTracks()[0];
+    if (!oldTrack || !this.localStream) {
+      replacement.stop();
+      throw new Error('no local video to replace');
+    }
+    const sender = this.pc?.getSenders().find(item => item.track?.kind === 'video');
+    await sender?.replaceTrack(replacement);
+    if (sender?.track !== replacement) {
+      // No sender (peer absent): keep the old track stopped and stash the new one.
+      this.localStream.removeTrack(oldTrack);
+      oldTrack.stop();
+      this.localStream.addTrack(replacement);
+    } else {
+      this.localStream.removeTrack(oldTrack);
+      oldTrack.stop();
+      this.localStream.addTrack(replacement);
+    }
+    replacement.contentHint = 'detail';
+    this.watchTrackEnded(replacement);
+    this.patch({ localStream: this.localStream, localVideoEnabled: true });
+    this.sendMediaState();
   }
 
   private async connectSocket(): Promise<void> {
@@ -329,11 +547,9 @@ export class CallSession {
       || this.socket.readyState === WebSocket.OPEN
     )) return;
     const generation = ++this.socketGeneration;
-    this.setStatus('正在连接', true);
+    this.patch({ wsPhase: this.snapshot.peerPresent ? 'reconnecting' : 'opening' });
 
     try {
-      // The browser WebSocket API cannot set Authorization. Exchange the in-memory
-      // JWT for a short-lived, single-use ticket so the JWT never enters a URL.
       const issued = await request<WsTicketResponse>('/api/ws-ticket', {
         method: 'POST',
         headers: { Authorization: 'Bearer ' + this.token },
@@ -348,8 +564,9 @@ export class CallSession {
       socket.addEventListener('open', () => {
         if (socket !== this.socket) return;
         this.reconnectAttempts = 0;
-        this.setStatus(this.peerPresent ? '建立连接' : '等待对方', true);
-        if (this.peerPresent && ['failed', 'disconnected'].includes(this.pc?.connectionState || '')) {
+        this.patch({ wsPhase: 'open', offline: false });
+        this.sendMediaState();
+        if (this.peerPresent && this.pc?.connectionState !== 'connected') {
           this.scheduleIceRestart(250);
         }
       });
@@ -364,14 +581,23 @@ export class CallSession {
             await this.onSignal(message);
           })
           .catch(error => {
-            console.error('signal handling failed', error);
-            this.callbacks.onToast('连接协商失败，正在恢复');
+            console.warn('signal handling failed', error);
+            // A malformed or unserializable exchange cannot be trusted to stay in
+            // sync; forcing a socket cycle re-establishes a clean ordered stream.
+            if (socket === this.socket && this.snapshot.active) {
+              socket.close();
+              this.socket = null;
+              this.scheduleSocketReconnect();
+            }
           });
       });
       socket.addEventListener('close', () => {
         if (socket !== this.socket) return;
         this.socket = null;
-        if (this.snapshot.active) this.scheduleSocketReconnect();
+        if (this.snapshot.active) {
+          this.patch({ wsPhase: 'reconnecting' });
+          this.scheduleSocketReconnect();
+        }
       });
     } catch (error) {
       if (!this.snapshot.active || generation !== this.socketGeneration) return;
@@ -388,15 +614,15 @@ export class CallSession {
         return;
       }
       console.warn('signaling connection failed', error);
+      this.patch({ wsPhase: 'reconnecting' });
       this.scheduleSocketReconnect();
     }
   }
 
   private scheduleSocketReconnect(): void {
     if (!this.snapshot.active) return;
-    this.setStatus('信令重连中', true);
     const base = Math.min(1000 * 2 ** this.reconnectAttempts++, 10_000);
-    const delay = Math.round(base * (.8 + Math.random() * .4));
+    const delay = Math.round(base * (0.8 + Math.random() * 0.4));
     this.clearTimer('reconnectTimer');
     this.reconnectTimer = setTimeout(() => void this.connectSocket(), delay);
   }
@@ -424,11 +650,13 @@ export class CallSession {
       await pc.setLocalDescription(tuneOpus(answer));
       this.sendSignal('answer', pc.localDescription);
       this.ignoreOffer = false;
+      this.patch({ pcPhase: 'connecting' });
     } else if (message.type === 'answer' && this.pc) {
       if (this.pc.signalingState !== 'have-local-offer') return;
       await this.pc.setRemoteDescription(message.payload as RTCSessionDescriptionInit);
       await this.flushPendingIceCandidates(this.pc);
       this.ignoreOffer = false;
+      this.patch({ pcPhase: 'connecting' });
     } else if (message.type === 'ice-candidate' && message.payload) {
       if (this.ignoreOffer) return;
       const pc = await this.ensurePeerConnection();
@@ -442,10 +670,18 @@ export class CallSession {
         await pc.addIceCandidate(candidate);
       }
     } else if (message.type === 'peer-left') {
-      this.resetPeer('对方已离开', '链接仍然有效，等待对方重新加入');
+      const leftName = this.snapshot.peerName;
+      this.resetPeer();
+      if (leftName) this.flash('call.peerLeft', { name: leftName });
     } else if (message.type === 'media-state') {
-      const media = message.payload as { video?: boolean };
-      this.patch({ remoteVideoOff: media.video === false && Boolean(this.snapshot.remoteStream) });
+      const media = message.payload as { audio?: boolean; video?: boolean } | undefined;
+      if (!media) return;
+      const hadRemoteVideo = !this.snapshot.remoteVideoOff;
+      this.patch({
+        remoteMuted: media.audio === false,
+        remoteVideoOff: media.video === false,
+      });
+      void hadRemoteVideo;
     }
   }
 
@@ -468,6 +704,7 @@ export class CallSession {
     this.pc = pc;
     this.pendingIceCandidates = [];
     this.ignoreOffer = false;
+    this.patch({ pcPhase: 'connecting' });
     this.localStream.getTracks().forEach(track => pc.addTrack(track, this.localStream as MediaStream));
     await configureVideoCodecs(pc);
     await configureAudioSender(pc);
@@ -475,34 +712,69 @@ export class CallSession {
     pc.addEventListener('icecandidate', event => {
       if (event.candidate) this.sendSignal('ice-candidate', event.candidate);
     });
-    pc.addEventListener('track', event => {
-      const stream = event.streams[0] || new MediaStream([event.track]);
-      this.patch({ remoteStream: stream, remoteVideoOff: false });
-    });
+    pc.addEventListener('track', event => this.onRemoteTrack(event));
     pc.addEventListener('negotiationneeded', () => {
       if (this.snapshot.active && this.peerPresent) void this.sendOffer(false);
     });
     pc.addEventListener('connectionstatechange', () => {
       if (pc !== this.pc) return;
-      const labels: Partial<Record<RTCPeerConnectionState, [string, boolean]>> = {
-        connected: ['通话中', false],
-        connecting: ['建立连接', true],
-        disconnected: ['连接中断', true],
-        failed: ['连接失败', true],
-      };
-      const next = labels[pc.connectionState];
-      if (next) this.setStatus(...next);
-      if (pc.connectionState === 'connected') {
-        this.iceRestartAttempts = 0;
-        this.clearTimer('iceRestartTimer');
-        this.startNetworkMonitor();
-      } else if (pc.connectionState === 'disconnected') {
-        this.scheduleIceRestart(3000);
-      } else if (pc.connectionState === 'failed') {
-        this.scheduleIceRestart(0);
-      }
+      this.onConnectionStateChange(pc);
     });
     return pc;
+  }
+
+  private onRemoteTrack(event: RTCTrackEvent): void {
+    const incoming = event.streams[0] ?? new MediaStream([event.track]);
+    const previous = this.snapshot.remoteStream;
+    if (!previous) {
+      this.patch({ remoteStream: incoming, remoteVideoOff: false });
+      return;
+    }
+    // Merge instead of replacing: a later track event (e.g. the peer turns
+    // their camera on mid-call) must not drop the audio track already playing.
+    if (incoming.id === previous.id) {
+      if (!previous.getTracks().some(track => track.id === event.track.id)) {
+        previous.addTrack(event.track);
+        this.patch({ remoteStream: previous });
+      }
+      return;
+    }
+    // New stream id: keep existing tracks if this browser reused the stream
+    // object poorly; prefer the richer of the two.
+    const merged = incoming;
+    for (const track of previous.getTracks()) {
+      if (!merged.getTracks().some(item => item.id === track.id)) {
+        // Cannot move tracks between streams of different ids; keep both by
+        // layering into a fresh composite stream.
+        merged.addTrack(track);
+      }
+    }
+    this.patch({ remoteStream: merged, remoteVideoOff: false });
+  }
+
+  private onConnectionStateChange(pc: RTCPeerConnection): void {
+    switch (pc.connectionState) {
+      case 'connected':
+        this.iceRestartAttempts = 0;
+        this.clearTimer('iceRestartTimer');
+        this.patch({ pcPhase: 'connected', connectedAt: this.snapshot.connectedAt ?? Date.now() });
+        this.startNetworkMonitor();
+        this.sendMediaState();
+        break;
+      case 'connecting':
+        this.patch({ pcPhase: 'connecting' });
+        break;
+      case 'disconnected':
+        this.patch({ pcPhase: 'reconnecting' });
+        this.scheduleIceRestart(3000);
+        break;
+      case 'failed':
+        this.patch({ pcPhase: 'reconnecting' });
+        this.scheduleIceRestart(0);
+        break;
+      default:
+        break;
+    }
   }
 
   private async sendOffer(iceRestart = false): Promise<boolean> {
@@ -531,10 +803,13 @@ export class CallSession {
         return;
       }
       if (this.iceRestartAttempts >= 3) {
+        // The peer connection is beyond repair; rebuild it fresh so the next
+        // offer gathers new ICE candidates instead of retrying dead ones.
         this.pc?.close();
         this.pc = null;
         this.pendingIceCandidates = [];
         this.iceRestartAttempts = 0;
+        this.patch({ pcPhase: 'connecting' });
       }
       this.iceRestartAttempts += 1;
       const sent = await this.sendOffer(true).catch(error => {
@@ -553,26 +828,22 @@ export class CallSession {
     if (this.socket?.readyState !== WebSocket.OPEN) return;
     const message = JSON.stringify({ type, payload });
     if (message.length <= 65_536) this.socket.send(message);
-    else this.callbacks.onToast('协商数据异常过大，正在重建连接');
+    else this.callbacks.onToast('call.toast.switchFailed');
   }
 
   private showPeer(name?: string): void {
     this.peerPresent = true;
-    const peerName = name || '对方';
+    const peerName = name || this.snapshot.peerName || '';
     this.patch({
       peerPresent: true,
       peerName,
-      remoteTitle: peerName + '正在加入',
-      remoteSubtitle: '正在建立安全的媒体连接',
-      status: '建立连接',
-      waiting: true,
+      wsPhase: this.snapshot.wsPhase,
+      // The caller of this handler proceeds to create/negotiate the peer
+      // connection; keep the existing phase until that work updates it.
     });
   }
 
-  private resetPeer(
-    title = '等待对方加入',
-    subtitle = '把房间链接发给想通话的人',
-  ): void {
+  private resetPeer(): void {
     this.peerPresent = false;
     this.clearTimer('iceRestartTimer');
     this.iceRestartAttempts = 0;
@@ -583,23 +854,20 @@ export class CallSession {
       peerPresent: false,
       peerName: '',
       remoteStream: null,
+      remoteMuted: false,
       remoteVideoOff: false,
-      remoteTitle: title,
-      remoteSubtitle: subtitle,
-      status: '等待对方',
-      waiting: true,
+      pcPhase: 'none',
+      quality: null,
+      connectedAt: null,
     });
   }
 
   private sendMediaState(): void {
+    if (!this.snapshot.active) return;
     this.sendSignal('media-state', {
       audio: this.localStream?.getAudioTracks().some(track => track.enabled) || false,
       video: this.localStream?.getVideoTracks().some(track => track.enabled) || false,
     });
-  }
-
-  private setStatus(status: string, waiting = false): void {
-    this.patch({ status, waiting });
   }
 
   private startNetworkMonitor(): void {
@@ -617,6 +885,7 @@ export class CallSession {
     this.goodSamples = 0;
     this.qualityTier = 0;
     this.networkEwma = null;
+    if (this.snapshot.quality !== null) this.patch({ quality: null });
   }
 
   private async sampleNetwork(): Promise<void> {
@@ -624,47 +893,67 @@ export class CallSession {
     if (!pc || pc.connectionState !== 'connected') return;
     try {
       const report = await pc.getStats();
-      let outbound: ExtendedStats | undefined;
-      let remoteInbound: ExtendedStats | undefined;
-      let candidatePair: ExtendedStats | undefined;
-      report.forEach(item => {
-        const stat = item as ExtendedStats;
-        if (stat.type === 'outbound-rtp' && stat.kind === 'video' && !stat.isRemote) outbound = stat;
-        if (stat.type === 'remote-inbound-rtp' && stat.kind === 'video') remoteInbound = stat;
-        if (stat.type === 'candidate-pair' && stat.state === 'succeeded' && (stat.nominated || stat.selected)) candidatePair = stat;
-      });
+      const stats = collectStats(report);
+      const outbound = stats.outboundVideo;
       if (!outbound) return;
 
-      const snapshot = {
+      const now = outbound.timestamp;
+      const previous = this.previousStats;
+      this.previousStats = {
         packetsSent: outbound.packetsSent || 0,
-        packetsLost: Math.max(0, remoteInbound?.packetsLost || 0),
-        timestamp: outbound.timestamp,
+        packetsLost: stats.remoteInbound?.packetsLost || 0,
+        bytesSent: outbound.bytesSent || 0,
+        bytesReceived: stats.inboundVideo?.bytesReceived || 0,
+        timestamp: now,
       };
-      if (!this.previousStats) {
-        this.previousStats = snapshot;
-        return;
-      }
+      if (!previous || now <= previous.timestamp) return;
 
-      const sent = Math.max(0, snapshot.packetsSent - this.previousStats.packetsSent);
-      const lost = Math.max(0, snapshot.packetsLost - this.previousStats.packetsLost);
-      const loss = lost / Math.max(1, sent + lost);
-      const rtt = remoteInbound?.roundTripTime ?? candidatePair?.currentRoundTripTime ?? 0;
-      const available = candidatePair?.availableOutgoingBitrate ?? Number.POSITIVE_INFINITY;
-      this.previousStats = snapshot;
+      const sent = Math.max(0, (outbound.packetsSent || 0) - previous.packetsSent);
+      const lost = Math.max(0, (stats.remoteInbound?.packetsLost || 0) - previous.packetsLost);
+      const loss = sent + lost > 0 ? lost / (sent + lost) : 0;
+      const rtt = stats.remoteInbound?.roundTripTime ?? stats.candidatePair?.currentRoundTripTime ?? 0;
+      const available = stats.candidatePair?.availableOutgoingBitrate ?? Number.POSITIVE_INFINITY;
+      const intervalSeconds = (now - previous.timestamp) / 1000;
+      const outboundBitrate = intervalSeconds > 0
+        ? Math.max(0, ((outbound.bytesSent || 0) - previous.bytesSent) * 8 / intervalSeconds)
+        : null;
+      const inboundBitrate = intervalSeconds > 0
+        ? Math.max(0, ((stats.inboundVideo?.bytesReceived || 0) - previous.bytesReceived) * 8 / intervalSeconds)
+        : null;
 
-      const alpha = this.networkEwma && available >= this.networkEwma.available ? .15 : .55;
+      const alpha = this.networkEwma && available >= this.networkEwma.available ? 0.15 : 0.55;
       this.networkEwma = {
         loss: ewma(this.networkEwma?.loss ?? null, loss, alpha),
         rtt: ewma(this.networkEwma?.rtt ?? null, rtt, alpha),
         available: ewma(this.networkEwma?.available ?? null, available, alpha),
       };
+
       const cpuLimited = outbound.qualityLimitationReason === 'cpu'
-        || Boolean(outbound.framesPerSecond && outbound.framesPerSecond < QUALITY_TIERS[this.qualityTier].maxFramerate * .7);
+        || Boolean(outbound.framesPerSecond && outbound.framesPerSecond < QUALITY_TIERS[this.qualityTier].maxFramerate * 0.7);
       const desiredTier = Math.max(
         classifyNetwork(this.networkEwma.loss, this.networkEwma.rtt, this.networkEwma.available),
         cpuLimited ? Math.min(2, this.qualityTier + 1) : 0,
       );
+      const quality = qualityFromTier(classifyNetwork(this.networkEwma.loss, this.networkEwma.rtt, this.networkEwma.available));
+      if (quality !== this.snapshot.quality) this.patch({ quality });
       await this.considerTierChange(desiredTier);
+
+      this.lastDiagnostics = {
+        wsPhase: this.snapshot.wsPhase,
+        pcState: pc.connectionState,
+        quality: this.snapshot.quality,
+        route: stats.route,
+        codec: stats.videoCodec,
+        resolution: outbound.frameWidth && outbound.frameHeight
+          ? { width: outbound.frameWidth, height: outbound.frameHeight }
+          : null,
+        frameRate: outbound.framesPerSecond ?? null,
+        outboundBitrate,
+        inboundBitrate,
+        rtt: this.networkEwma.rtt,
+        loss: this.networkEwma.loss,
+        jitter: stats.remoteInbound?.jitter ?? null,
+      };
     } catch (error) {
       console.debug('network sampling unavailable', error);
     }
@@ -694,7 +983,7 @@ export class CallSession {
   private async applyQualityTier(
     tierIndex: number,
     pc = this.pc,
-    notify = true,
+    _notify = true,
   ): Promise<void> {
     const tier = QUALITY_TIERS[tierIndex];
     const sender = pc?.getSenders().find(item => item.track?.kind === 'video');
@@ -732,9 +1021,7 @@ export class CallSession {
         console.debug('track constraints unsupported', error);
       }
     }
-    const changed = this.qualityTier !== tierIndex;
     this.qualityTier = tierIndex;
-    if (changed && notify) this.callbacks.onToast(tier.name + ' · 质量优先自适应');
   }
 
   private async requestWakeLock(): Promise<void> {
@@ -751,6 +1038,18 @@ export class CallSession {
     this.localStream = null;
   }
 }
+
+export class MediaSetupError extends Error {
+  readonly key: MessageKey;
+
+  constructor(key: MessageKey) {
+    super(key);
+    this.name = 'MediaSetupError';
+    this.key = key;
+  }
+}
+
+/* ---------- Pure helpers (unit tested) ---------- */
 
 export function candidateMatchesRemoteDescription(
   pc: Pick<RTCPeerConnection, 'remoteDescription'>,
@@ -862,4 +1161,60 @@ async function scoreCodec(codec: ExtendedCodec, preferred: string[]): Promise<nu
     // Capability probing is optional; retain the compatibility ranking.
   }
   return score;
+}
+
+/* ---------- getStats summary (pure-ish, unit tested with fake reports) ---------- */
+
+interface StatsSummary {
+  outboundVideo?: ExtendedStats;
+  inboundVideo?: ExtendedStats;
+  remoteInbound?: ExtendedStats;
+  candidatePair?: ExtendedStats;
+  videoCodec: string;
+  route: 'direct' | 'relay' | 'unknown';
+}
+
+export function collectStats(report: RTCStatsReport): StatsSummary {
+  let outboundVideo: ExtendedStats | undefined;
+  let inboundVideo: ExtendedStats | undefined;
+  let remoteInbound: ExtendedStats | undefined;
+  let candidatePair: ExtendedStats | undefined;
+  let localCandidate: ExtendedStats | undefined;
+  let remoteCandidate: ExtendedStats | undefined;
+  const codecs = new Map<string, ExtendedStats>();
+
+  report.forEach(item => {
+    const stat = item as ExtendedStats;
+    if (stat.type === 'outbound-rtp' && stat.kind === 'video' && !stat.isRemote) outboundVideo = stat;
+    if (stat.type === 'inbound-rtp' && stat.kind === 'video' && !stat.isRemote) inboundVideo = stat;
+    if (stat.type === 'remote-inbound-rtp' && stat.kind === 'video') remoteInbound = stat;
+    if (stat.type === 'candidate-pair' && stat.state === 'succeeded' && (stat.nominated || stat.selected)) {
+      candidatePair = stat;
+    }
+    if (stat.type === 'local-candidate') localCandidate = stat;
+    if (stat.type === 'remote-candidate') remoteCandidate = stat;
+    if (stat.type === 'codec') codecs.set(stat.id, stat);
+  });
+
+  let route: 'direct' | 'relay' | 'unknown' = 'unknown';
+  if (candidatePair) {
+    const remoteType = remoteCandidate?.candidateType || 'unknown';
+    const localType = localCandidate?.candidateType || 'unknown';
+    route = remoteType === 'relay' || localType === 'relay' ? 'relay' : 'direct';
+  }
+
+  let videoCodec = '';
+  if (outboundVideo?.codecId) {
+    const codec = codecs.get(outboundVideo.codecId);
+    if (codec?.mimeType) videoCodec = codec.mimeType.replace('video/', '').toUpperCase();
+  }
+
+  return {
+    outboundVideo,
+    inboundVideo,
+    remoteInbound,
+    candidatePair,
+    videoCodec,
+    route,
+  };
 }
